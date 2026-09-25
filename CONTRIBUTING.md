@@ -25,6 +25,16 @@ Silhouette is developed as a sequence of bounded, end-to-end versions. Contribut
 
 Every behavior change should have the narrowest meaningful automated test. Reconstruction and graph tests should prefer deterministic synthetic spans with stable IDs and timestamps.
 
+Configure, build, and run the current scaffold checks with:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+CTest currently verifies only that the pre-V0.1 executable starts and reports its scaffold state. It is not a substitute for the behavior-focused unit tests and real OTLP validation required as features are added.
+
 At minimum, the V1 suite should cover:
 
 - a single root and simple chain;

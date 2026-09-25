@@ -4,7 +4,20 @@ Silhouette is a local, vendor-neutral distributed-tracing and architecture-analy
 
 ## Status
 
-Silhouette is currently in **V1 planning**. The V1 scope is frozen, but product code has not been implemented yet.
+Silhouette has a **pre-V0.1 C++ scaffold**. The executable and smoke-test path are buildable, but no product features have been implemented. V0.1 will be the first vertical product capability; the broader V1 scope remains frozen as described below.
+
+## Build the scaffold
+
+The scaffold requires a C++20 compiler and CMake 3.24 or newer.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/silhouette
+```
+
+The executable currently prints an explicit scaffold message and exits successfully. That message is temporary verification behavior, not a stable CLI contract.
 
 ## V1 in one flow
 
@@ -54,5 +67,3 @@ A static service map is a foundation, not the final product thesis. After V1, Si
 - [STATUS.md](STATUS.md) — current state, accepted decisions, open decisions, and next task
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development and review workflow
 - [AGENTS.md](AGENTS.md) — operating rules for coding agents
-
-Build and run instructions will be added when the initial executable and toolchain are chosen. Until then, this repository contains project context only.

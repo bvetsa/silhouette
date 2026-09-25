@@ -4,11 +4,11 @@ Last updated: 2026-09-24
 
 ## NOW
 
-Review and approve the repository context documents. No product code has been implemented.
+The pre-V0.1 foundation is in place: a CMake-based C++20 executable and dependency-free CTest smoke test. No OTLP, reconstruction, aggregation, or graph functionality has been implemented.
 
 ## NEXT
 
-Begin V1 Milestone 1, Step 1: choose the smallest executable C++ project structure, build/test tooling, and initial OTLP transport. Do not begin this step until the documentation review is complete or the user explicitly asks to proceed.
+Define the first vertical V0.1 capability. Before its feature implementation begins, complete the remaining Milestone 1 setup decision by choosing the initial OTLP transport and its required dependencies.
 
 ## Accepted decisions
 
@@ -22,17 +22,19 @@ Begin V1 Milestone 1, Step 1: choose the smallest executable C++ project structu
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
 - Development strategy: vertical milestones, just-in-time learning, and measurement before optimization.
+- Pre-V0.1 build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
+- Initial repository layout: one executable source under `src/` and scaffold checks under `tests/`; add further boundaries only when implemented behavior requires them.
+- Scaffold verification: built-in CTest with no third-party test dependency. The production unit-test framework remains undecided until V0.1 needs it.
+- Scaffold executable target: `silhouette`. Its startup message is temporary and does not establish a stable CLI contract.
 
 ## Open decisions
 
-These should be decided only when Milestone 1 requires them:
+These should be decided only when Milestone 1 or V0.1 requires them:
 
-- repository layout;
-- C++ language standard;
-- build system and test framework;
+- unit-test framework for behavior beyond the dependency-free scaffold smoke test;
 - OTLP/gRPC versus OTLP/HTTP as the first supported transport;
 - exact OpenTelemetry/protobuf/networking dependencies;
-- CLI name, flags, defaults, and output locations;
+- stable CLI flags, defaults, and output locations;
 - precise graph styling and observability-gap notation;
 - whether minimal status/error fields are necessary in V1's internal span model.
 
@@ -40,7 +42,14 @@ An open decision is not permission for an agent to choose silently. Present opti
 
 ## Known issues
 
-None yet; implementation has not started.
+No known scaffold issues. Product feature implementation has not started.
+
+## Latest work
+
+- Added the pre-V0.1 configure, build, executable, and smoke-test path.
+- Verified the Debug build with Apple Clang and passed the CTest smoke test.
+- Kept all product behavior and protocol dependencies out of the scaffold.
+- Deferred the first OTLP transport, production test framework, and V0.1 capability definition.
 
 ## LATER
 
