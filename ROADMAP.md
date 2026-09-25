@@ -1,5 +1,11 @@
 # Roadmap
 
+## Version terminology
+
+- **Pre-V0.1** is the buildable project scaffold only; it contains no product capability.
+- **V0.1** is V1 Milestone 1: real OTLP input to correctly reconstructed textual traces.
+- **V1** is complete only after Milestones 1–4 and the acceptance criteria in `PROJECT.md` are satisfied.
+
 ## V1 — Observed architecture from OTLP traces
 
 Silhouette V1 turns a finite capture of real OpenTelemetry trace data into correctly reconstructed request traces, an aggregated service map, and explicit observability-gap markers.
@@ -17,6 +23,13 @@ real OTLP
 The result must be reproducible by another developer and must demonstrate correct handling of simple chains, branching, multiple traces, repeated service edges, same-service child spans, out-of-order arrival, malformed input at the receiver boundary, graceful shutdown, and deliberately incomplete telemetry.
 
 The complete V1 contract, system boundary, engineering principles, and non-goals are defined in `PROJECT.md`.
+
+## V1 milestone sequence
+
+1. **Milestone 1 / V0.1 — Real OTLP to reconstructed traces:** receive real OTLP from a separate application, convert it into the internal span model, reconstruct out-of-order parent-child relationships, and print deterministic textual traces.
+2. **Milestone 2 — Reconstructed traces to service map:** aggregate cross-service relationships and produce deterministic DOT/static graph output.
+3. **Milestone 3 — Incomplete telemetry to visible failure points:** retain useful partial topology while reporting and displaying observability gaps without invented relationships.
+4. **Milestone 4 — Integrated V1:** complete graceful finite capture, real multi-service validation, malformed-input handling, reproducible documentation, and the full V1 acceptance suite.
 
 ## Future versions
 

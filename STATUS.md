@@ -10,11 +10,11 @@ The repository documentation now separates durable project context, version-leve
 
 ## Current task
 
-The documentation-structure cleanup is complete. No product feature implementation task is active.
+The documentation-structure and version-terminology cleanup is complete. No product feature implementation task is active.
 
 ## Next concrete step
 
-Define the first vertical V0.1 capability. Before feature implementation begins, choose the initial OTLP transport and the smallest required dependency set.
+Plan the already-defined V0.1 capability: V1 Milestone 1, real OTLP input to reconstructed textual traces. Before feature implementation begins, choose the initial OTLP transport and the smallest required dependency set.
 
 ## Accepted decisions
 
@@ -28,6 +28,7 @@ Define the first vertical V0.1 capability. Before feature implementation begins,
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
 - Development strategy: vertical progress, just-in-time learning, and measurement before optimization.
+- Version terminology is defined canonically in `ROADMAP.md`; status and task language must follow that mapping.
 - Build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
 - Initial repository layout: one executable source under `src/` and checks under `tests/`; add further boundaries only when implemented behavior requires them.
 - Baseline verification: built-in CTest with no third-party test dependency. The production unit-test framework remains undecided until product behavior needs it.
@@ -53,8 +54,9 @@ No known scaffold issues. Product feature implementation has not started.
 ## Latest work
 
 - Reorganized the repository documentation around durable project context, version-level planning, user and contributor guidance, and this active status record.
-- Removed scaffold-era status language from `AGENTS.md`, `CONTRIBUTING.md`, and `README.md`.
 - Reduced `ROADMAP.md` to the V1 outcome and uncommitted future-version directions.
+- Defined the pre-V0.1, V0.1, and V1 mapping canonically in `ROADMAP.md`.
+- Updated `AGENTS.md` to require explicit authorization before V0.1 feature implementation.
 - Kept `PROJECT.md` unchanged because its thesis, V1 contract, and architecture boundaries remain current.
 - Added and verified the configure, build, executable, and smoke-test path.
 - Kept all product behavior and protocol dependencies out of the foundation.
