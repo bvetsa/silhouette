@@ -2,13 +2,19 @@
 
 Last updated: 2026-09-24
 
-## NOW
+## Current status
 
-The pre-V0.1 foundation is in place: a CMake-based C++20 executable and dependency-free CTest smoke test. No OTLP, reconstruction, aggregation, or graph functionality has been implemented.
+The pre-V0.1 foundation is in place: a CMake-based C++20 executable and dependency-free CTest smoke test. No OTLP ingestion, trace reconstruction, service aggregation, or graph generation functionality has been implemented.
 
-## NEXT
+The repository documentation now separates durable project context, version-level goals, contributor and agent guidance, user-facing information, and active project state.
 
-Define the first vertical V0.1 capability. Before its feature implementation begins, complete the remaining Milestone 1 setup decision by choosing the initial OTLP transport and its required dependencies.
+## Current task
+
+The documentation-structure cleanup is complete. No product feature implementation task is active.
+
+## Next concrete step
+
+Define the first vertical V0.1 capability. Before feature implementation begins, choose the initial OTLP transport and the smallest required dependency set.
 
 ## Accepted decisions
 
@@ -21,17 +27,17 @@ Define the first vertical V0.1 capability. Before its feature implementation beg
 - V1 output: textual trace diagnostics plus a simple DOT/static visual service map.
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
-- Development strategy: vertical milestones, just-in-time learning, and measurement before optimization.
-- Pre-V0.1 build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
-- Initial repository layout: one executable source under `src/` and scaffold checks under `tests/`; add further boundaries only when implemented behavior requires them.
-- Scaffold verification: built-in CTest with no third-party test dependency. The production unit-test framework remains undecided until V0.1 needs it.
-- Scaffold executable target: `silhouette`. Its startup message is temporary and does not establish a stable CLI contract.
+- Development strategy: vertical progress, just-in-time learning, and measurement before optimization.
+- Build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
+- Initial repository layout: one executable source under `src/` and checks under `tests/`; add further boundaries only when implemented behavior requires them.
+- Baseline verification: built-in CTest with no third-party test dependency. The production unit-test framework remains undecided until product behavior needs it.
+- Executable target: `silhouette`. Its current startup message is temporary and does not establish a stable CLI contract.
 
 ## Open decisions
 
-These should be decided only when Milestone 1 or V0.1 requires them:
+These should be decided only when authorized work requires them:
 
-- unit-test framework for behavior beyond the dependency-free scaffold smoke test;
+- unit-test framework for behavior beyond the dependency-free smoke test;
 - OTLP/gRPC versus OTLP/HTTP as the first supported transport;
 - exact OpenTelemetry/protobuf/networking dependencies;
 - stable CLI flags, defaults, and output locations;
@@ -46,21 +52,13 @@ No known scaffold issues. Product feature implementation has not started.
 
 ## Latest work
 
-- Added the pre-V0.1 configure, build, executable, and smoke-test path.
-- Verified the Debug build with Apple Clang and passed the CTest smoke test.
-- Kept all product behavior and protocol dependencies out of the scaffold.
-- Deferred the first OTLP transport, production test framework, and V0.1 capability definition.
+- Reorganized the repository documentation around durable project context, version-level planning, user and contributor guidance, and this active status record.
+- Removed scaffold-era status language from `AGENTS.md`, `CONTRIBUTING.md`, and `README.md`.
+- Reduced `ROADMAP.md` to the V1 outcome and uncommitted future-version directions.
+- Kept `PROJECT.md` unchanged because its thesis, V1 contract, and architecture boundaries remain current.
+- Added and verified the configure, build, executable, and smoke-test path.
+- Kept all product behavior and protocol dependencies out of the foundation.
 
-## LATER
+## Deferred work
 
-The candidate backlog is maintained in `ROADMAP.md`. Items there must not expand V1 unless the user explicitly redefines the version.
-
-## Work-log template
-
-At the end of a substantive work session, update this file with:
-
-- what changed;
-- what is broken, uncertain, or blocked;
-- the next concrete task;
-- decisions made and why;
-- ideas deferred to LATER.
+No task-level follow-ups are currently recorded. Possible post-V1 version directions are listed in `ROADMAP.md`.

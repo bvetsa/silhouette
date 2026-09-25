@@ -2,20 +2,17 @@
 
 These instructions apply to the entire repository.
 
-## Read first
+## Sources of truth
 
-Before planning or changing code, read:
+Before planning or changing the repository, read:
 
-1. `PROJECT.md` for the product contract and architecture boundaries;
-2. `ROADMAP.md` for the current version and milestone definitions;
-3. `STATUS.md` for current work, accepted decisions, and unresolved choices;
-4. `CONTRIBUTING.md` for testing and completion expectations.
+1. `PROJECT.md` for the product thesis, contract, and architecture boundaries;
+2. `ROADMAP.md` for version-level goals and acceptance outcomes;
+3. `STATUS.md` for current work, accepted and open decisions, known issues, and the next concrete step;
+4. `CONTRIBUTING.md` for the development, testing, and review workflow;
+5. `README.md` for the user-facing build and usage path.
 
-If these documents disagree, stop and surface the conflict. Do not silently choose the interpretation that permits more work.
-
-## Current authorization boundary
-
-The repository is in documentation review. **Do not implement or scaffold product code unless the user explicitly asks to begin implementation.** Documentation edits and read-only investigation do not imply authorization to start Milestone 1.
+If these documents disagree, stop and surface the conflict. Do not silently choose the interpretation that permits more work. A roadmap goal does not authorize implementation; follow the user's request and the active work recorded in `STATUS.md`.
 
 ## Product invariants
 
@@ -30,14 +27,14 @@ The repository is in documentation review. **Do not implement or scaffold produc
 
 ## Scope discipline
 
-Work only on the current task within the current milestone. Keep future ideas in LATER.
+Work only on the explicitly requested task and keep each change focused on the smallest coherent result.
 
 When a new idea appears, classify it:
 
-- **Blocking flaw:** V1 cannot be correct or usable without it. Explain why and address it in the smallest possible way.
-- **Improvement:** useful but not required for V1. Record it for later and continue the current task.
+- **Blocking flaw:** the requested result cannot be correct or usable without it. Explain why and address it in the smallest practical way.
+- **Improvement:** useful but not required for the requested result. Record it in `STATUS.md` if it needs follow-up, then continue the current task.
 
-Do not implement live views, persistence, dashboards, request playback, latency analysis, advanced inference, production deployment, or unmeasured performance optimizations during V1.
+Do not introduce V1 non-goals or future-version capabilities unless the user explicitly changes the project scope. Avoid unrelated cleanup, speculative interfaces, placeholder layers, and abstractions with only hypothetical consumers.
 
 ## How to collaborate with the user
 
@@ -66,18 +63,18 @@ When implementation is authorized:
 
 ## Verification expectations
 
-Run the narrow tests for every change, then the broader relevant suite. Validate both positive behavior and damaged telemetry. For rendered graph changes, inspect the actual generated artifact rather than assuming valid DOT means a useful map.
+Run the narrow tests for every change, then the broader relevant suite. Validate both expected behavior and applicable failure cases. For rendered graph changes, inspect the generated artifact rather than assuming valid DOT means a useful map.
 
-Keep synthetic algorithm verification distinct from real OTLP integration. Report precisely which layer was tested.
+Keep synthetic algorithm verification distinct from real OTLP integration. Report precisely which layer was tested and distinguish local validation from external end-to-end confirmation.
 
 ## Project-state hygiene
 
 At the end of substantive work:
 
-- update `STATUS.md` with what changed, unresolved problems, and the next concrete task;
-- update accepted/open decisions when a choice is made;
-- keep `PROJECT.md` stable unless the product contract actually changes;
-- update `ROADMAP.md` only when scope, milestone state, or the candidate backlog changes;
-- leave the repository buildable and tests passing, or clearly record the exact exception.
+- update `STATUS.md` with what changed, unresolved problems, material decisions, and the next concrete task;
+- change `PROJECT.md` only when the product thesis, contract, or architecture boundaries change;
+- change `ROADMAP.md` only when version-scale goals, acceptance outcomes, or future directions change;
+- keep user-facing build and usage guidance in `README.md` accurate;
+- leave the repository buildable and tests passing, or record the exact exception in `STATUS.md`.
 
 Do not rewrite history, delete user work, or make unrelated cleanup changes. Keep changes focused and reviewable.
