@@ -4,8 +4,6 @@ Silhouette is a local, vendor-neutral distributed-tracing and architecture-analy
 
 ## Capabilities
 
-Silhouette currently has only the **pre-V0.1 C++ scaffold**. The executable and smoke-test path are buildable, but no product features have been implemented. The canonical version mapping is defined in `ROADMAP.md`.
-
 Silhouette's V1 product boundary is designed to:
 
 - receive real OTLP trace exports from a separate instrumented application;

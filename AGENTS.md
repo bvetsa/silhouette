@@ -36,7 +36,6 @@ These instructions apply to any coding agent working in this repository.
 
 ## Decisions and handoff
 
-- Explain unfamiliar concepts and important design tradeoffs when they materially affect implementation.
 - For a blocking, hard-to-reverse design choice, present concrete options and tradeoffs rather than silently choosing.
 - Do not silently expand scope. Record or report useful follow-up work without implementing it unless requested.
 - Update `STATUS.md` only when the current project state, material decisions, known issues, or next concrete work actually change.
