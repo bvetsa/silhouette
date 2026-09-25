@@ -14,9 +14,6 @@ Before planning or changing the repository, read:
 
 If these documents disagree, stop and surface the conflict. Do not silently choose the interpretation that permits more work. A roadmap goal does not authorize implementation; follow the user's request and the active work recorded in `STATUS.md`.
 
-## Current authorization boundary
-
-The pre-V0.1 scaffold is complete. **Do not begin V0.1 feature implementation unless the user explicitly authorizes it.** Documentation edits and read-only investigation do not imply authorization to start Milestone 1.
 
 ## Product invariants
 
