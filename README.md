@@ -2,57 +2,71 @@
 
 Silhouette is a local, vendor-neutral distributed-tracing and architecture-analysis system built around OpenTelemetry. It reconstructs the **observed architecture** and causal request flow of a system from trace data, while making incomplete or inconsistent telemetry visible instead of presenting an uncertain map as fact.
 
-## Status
+## Capabilities
 
-Silhouette is currently in **V1 planning**. The V1 scope is frozen, but product code has not been implemented yet.
+Silhouette's V1 product boundary is designed to:
 
-## V1 in one flow
+- receive real OTLP trace exports from a separate instrumented application;
+- convert OpenTelemetry protocol data into a small, transport-independent C++ span model;
+- group spans by trace and reconstruct parent-child structure regardless of arrival order;
+- derive directed service relationships without treating every same-service child span as a new service edge;
+- produce readable trace diagnostics, deterministic DOT output, and a simple static service map;
+- preserve useful partial topology while marking missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity.
+
+The product reconstructs only what the received telemetry supports. It does not invent missing relationships or claim that an observed map is a complete description of the deployed system.
+
+## How it works
 
 ```text
-external OTel-instrumented application
-                |
-                | real OTLP traces
-                v
-         finite capture
-                |
-                v
-       internal C++ spans
-                |
-                v
-  reconstructed request traces
-                |
-                v
-   aggregated service graph
-                |
-                +--> textual trace diagnostics
-                +--> DOT/SVG service map
-                +--> explicit observability gaps
+external OpenTelemetry-instrumented application
+                         |
+                         | OTLP traces
+                         v
+                  finite capture
+                         |
+                         v
+                internal C++ spans
+                         |
+                         v
+           reconstructed request traces
+                         |
+                         v
+            aggregated service graph
+                         |
+                         +--> textual trace diagnostics
+                         +--> DOT/static service map
+                         +--> explicit observability gaps
 ```
 
-The user starts Silhouette, generates traffic in a completely separate instrumented application, and stops collection with Ctrl-C. Silhouette then processes the complete capture and emits its results.
+The usage model is to start Silhouette, send it telemetry from a separate application, generate a finite amount of traffic, stop collection cleanly with Ctrl-C, and inspect the generated diagnostics and graph. Runtime transport, configuration, and output details should be taken from the implemented interface; see `STATUS.md` for what is currently available.
 
-V1 must:
+## Build, test, and run
 
-- accept real OTLP trace exports;
-- convert OpenTelemetry data into a transport-independent internal span model;
-- group spans by trace and reconstruct parent-child structure regardless of arrival order;
-- derive directed service relationships without treating every same-service internal span as a new service edge;
-- produce readable trace diagnostics and a simple static service map;
-- preserve useful partial topology and mark missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity;
-- validate algorithms with synthetic tests and the integration boundary with a separate real application.
+Silhouette requires a C++20 compiler and CMake 3.24 or newer.
 
-## Why this project exists
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/silhouette
+```
 
-The C++ engine is the technical center of the project. It creates a practical setting for learning ownership, lifetimes, memory layout, data structures, networking, concurrency, profiling, and performance. Those topics will be introduced only when the current implementation requires them.
+The executable target is `silhouette`. Stable runtime flags, telemetry endpoints, and output locations will be documented here when they are established; temporary behavior and open implementation decisions belong in `STATUS.md`.
 
-A static service map is a foundation, not the final product thesis. After V1, Silhouette should be evaluated against current tools such as AWS X-Ray before choosing a differentiator. Candidate directions include observability-gap analysis, confidence-aware topology, critical-path reasoning, architecture inference, weakness detection, and architecture change over time.
+## Design priorities
+
+- correctness before sophistication;
+- explicit uncertainty rather than fabricated certainty;
+- clear C++ ownership and lifetimes;
+- standard OTLP, protobuf, networking, and graph tooling;
+- deterministic output where practical;
+- measurement before concurrency or performance complexity;
+- a lightweight presentation layer around the C++ engine.
 
 ## Documentation
 
-- [PROJECT.md](PROJECT.md) — product thesis, system boundaries, V1 contract, and design principles
-- [ROADMAP.md](ROADMAP.md) — bounded V1 milestones, completion criteria, and future candidates
-- [STATUS.md](STATUS.md) — current state, accepted decisions, open decisions, and next task
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development and review workflow
-- [AGENTS.md](AGENTS.md) — operating rules for coding agents
-
-Build and run instructions will be added when the initial executable and toolchain are chosen. Until then, this repository contains project context only.
+- [PROJECT.md](PROJECT.md) — project thesis, system boundaries, V1 contract, and engineering principles
+- [ROADMAP.md](ROADMAP.md) — version-level goals, acceptance outcomes, and possible future directions
+- [STATUS.md](STATUS.md) — current work, accepted and open decisions, known issues, and the next concrete step
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development, testing, and review workflow
+- [AGENTS.md](AGENTS.md) — durable operating rules for coding agents

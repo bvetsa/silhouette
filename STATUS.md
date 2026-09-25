@@ -1,14 +1,18 @@
 # Project Status
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 
-## NOW
+## Current status
 
-Review and approve the repository context documents. No product code has been implemented.
+The pre-V0.1 foundation is in place: a CMake-based C++20 executable and dependency-free CTest smoke test. No OTLP ingestion, trace reconstruction, service aggregation, or graph generation functionality has been implemented.
 
-## NEXT
+## Current task
 
-Begin V1 Milestone 1, Step 1: choose the smallest executable C++ project structure, build/test tooling, and initial OTLP transport. Do not begin this step until the documentation review is complete or the user explicitly asks to proceed.
+The final pre-product documentation cleanup is complete. No product feature implementation task is active.
+
+## Next concrete step
+
+Select and explicitly authorize the next product task before implementation. The initial OTLP transport and smallest required dependency set remain blocking design choices.
 
 ## Accepted decisions
 
@@ -21,18 +25,20 @@ Begin V1 Milestone 1, Step 1: choose the smallest executable C++ project structu
 - V1 output: textual trace diagnostics plus a simple DOT/static visual service map.
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
-- Development strategy: vertical milestones, just-in-time learning, and measurement before optimization.
+- Development strategy: vertical progress, just-in-time learning, and measurement before optimization.
+- Build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
+- Initial repository layout: one executable source under `src/` and checks under `tests/`; add further boundaries only when implemented behavior requires them.
+- Baseline verification: built-in CTest with no third-party test dependency. The production unit-test framework remains undecided until product behavior needs it.
+- Executable target: `silhouette`. Its current startup message is temporary and does not establish a stable CLI contract.
 
 ## Open decisions
 
-These should be decided only when Milestone 1 requires them:
+These should be decided only when authorized work requires them:
 
-- repository layout;
-- C++ language standard;
-- build system and test framework;
+- unit-test framework for behavior beyond the dependency-free smoke test;
 - OTLP/gRPC versus OTLP/HTTP as the first supported transport;
 - exact OpenTelemetry/protobuf/networking dependencies;
-- CLI name, flags, defaults, and output locations;
+- stable CLI flags, defaults, and output locations;
 - precise graph styling and observability-gap notation;
 - whether minimal status/error fields are necessary in V1's internal span model.
 
@@ -40,18 +46,14 @@ An open decision is not permission for an agent to choose silently. Present opti
 
 ## Known issues
 
-None yet; implementation has not started.
+No known scaffold issues. Product feature implementation has not started.
 
-## LATER
+## Latest work
 
-The candidate backlog is maintained in `ROADMAP.md`. Items there must not expand V1 unless the user explicitly redefines the version.
+- Added and verified the configure, build, executable, and smoke-test path.
+- Kept all product behavior and protocol dependencies out of the foundation.
+- Completed the final pre-product documentation cleanup without changing repository behavior.
 
-## Work-log template
+## Deferred work
 
-At the end of a substantive work session, update this file with:
-
-- what changed;
-- what is broken, uncertain, or blocked;
-- the next concrete task;
-- decisions made and why;
-- ideas deferred to LATER.
+No task-level follow-ups are currently recorded. Possible post-V1 version directions are listed in `ROADMAP.md`.
