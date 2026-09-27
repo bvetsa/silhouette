@@ -17,7 +17,6 @@ namespace otlp = opentelemetry::proto::collector::trace::v1;
 using Receiver = silhouette::ingestion::OtlpGrpcReceiver;
 
 constexpr auto kEphemeralAddress = "127.0.0.1:0";
-constexpr auto kBindConflictAddress = "127.0.0.1:54321";
 
 void Require(const bool condition, const std::string_view message)
 {
@@ -204,16 +203,18 @@ void DestructorReleasesPort()
 
 void RejectsDuplicateBind()
 {
-    Receiver first_receiver{kBindConflictAddress};
+    Receiver first_receiver{kEphemeralAddress};
     first_receiver.Start();
+    const auto selected_address =
+        "127.0.0.1:" + std::to_string(first_receiver.selected_port());
 
     bool rejected = false;
     try {
-        Receiver second_receiver{kBindConflictAddress};
+        Receiver second_receiver{selected_address};
         second_receiver.Start();
     } catch (const std::runtime_error& error) {
         rejected =
-            std::string{error.what()}.find(kBindConflictAddress) != std::string::npos;
+            std::string{error.what()}.find(selected_address) != std::string::npos;
     }
 
     Require(rejected, "second receiver did not report the fixed-port bind failure");

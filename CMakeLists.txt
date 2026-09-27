@@ -109,7 +109,10 @@ add_library(silhouette_otlp_proto
 )
 target_compile_features(silhouette_otlp_proto PUBLIC cxx_std_20)
 set_target_properties(silhouette_otlp_proto PROPERTIES CXX_EXTENSIONS OFF)
-target_include_directories(silhouette_otlp_proto PUBLIC "${SILHOUETTE_GENERATED_DIR}")
+target_include_directories(
+    silhouette_otlp_proto
+    SYSTEM PUBLIC "${SILHOUETTE_GENERATED_DIR}"
+)
 target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 
 add_library(silhouette_ingestion
