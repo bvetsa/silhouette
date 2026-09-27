@@ -217,7 +217,7 @@ void RejectsDuplicateBind()
             std::string{error.what()}.find(selected_address) != std::string::npos;
     }
 
-    Require(rejected, "second receiver did not report the fixed-port bind failure");
+    Require(rejected, "second receiver did not report the duplicate-port bind failure");
 }
 
 struct TestCase {
