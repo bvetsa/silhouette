@@ -3,54 +3,44 @@
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
+#include <array>
 #include <chrono>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 
 namespace otlp = opentelemetry::proto::collector::trace::v1;
+using Receiver = silhouette::ingestion::OtlpGrpcReceiver;
 
-class TestContext final {
-public:
-    void Expect(const bool condition, const std::string& message)
-    {
-        if (!condition) {
-            std::cerr << "FAILED: " << message << '\n';
-            ++failure_count_;
-        }
+constexpr auto kEphemeralAddress = "127.0.0.1:0";
+constexpr auto kBindConflictAddress = "127.0.0.1:54321";
+
+void Require(const bool condition, const std::string_view message)
+{
+    if (!condition) {
+        throw std::runtime_error{std::string{message}};
     }
+}
 
-    [[nodiscard]] int failure_count() const noexcept
-    {
-        return failure_count_;
-    }
-
-private:
-    int failure_count_{0};
-};
-
-std::unique_ptr<otlp::TraceService::Stub> Connect(
-    const silhouette::ingestion::OtlpGrpcReceiver& receiver,
-    TestContext& context)
+std::unique_ptr<otlp::TraceService::Stub> Connect(const Receiver& receiver)
 {
     const auto endpoint = "127.0.0.1:" + std::to_string(receiver.selected_port());
     auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
 
-    context.Expect(
-        channel->WaitForConnected(
-            std::chrono::system_clock::now() + std::chrono::seconds{5}),
-        "client connects to the started receiver");
+    Require(channel->WaitForConnected(
+                std::chrono::system_clock::now() + std::chrono::seconds{5}),
+            "client did not connect to the receiver");
 
     return otlp::TraceService::NewStub(channel);
 }
 
-otlp::ExportTraceServiceResponse Export(
+otlp::ExportTraceServiceResponse ExportSuccessfully(
     otlp::TraceService::Stub& stub,
-    const otlp::ExportTraceServiceRequest& request,
-    TestContext& context)
+    const otlp::ExportTraceServiceRequest& request)
 {
     grpc::ClientContext client_context;
     client_context.set_deadline(
@@ -58,7 +48,7 @@ otlp::ExportTraceServiceResponse Export(
 
     otlp::ExportTraceServiceResponse response;
     const auto status = stub.Export(&client_context, request, &response);
-    context.Expect(status.ok(), "receiver acknowledges the export with gRPC OK");
+    Require(status.ok(), "receiver did not acknowledge the export with gRPC OK");
     return response;
 }
 
@@ -79,79 +69,203 @@ otlp::ExportTraceServiceRequest MakeFiveSpanRequest()
     return request;
 }
 
+void RejectsEmptyAddress()
+{
+    bool rejected = false;
+    try {
+        Receiver receiver{""};
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+
+    Require(rejected, "empty listen address was not rejected");
+}
+
+void StartsOnEphemeralPort()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+
+    Require(receiver.selected_port() > 0, "receiver did not select a usable port");
+}
+
+void AcknowledgesEmptyExport()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    auto stub = Connect(receiver);
+
+    ExportSuccessfully(*stub, {});
+}
+
+void SuccessfulExportOmitsPartialSuccess()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    auto stub = Connect(receiver);
+
+    const auto response = ExportSuccessfully(*stub, {});
+    Require(!response.has_partial_success(),
+            "successful export unexpectedly set partial_success");
+}
+
+void CountsExportRequest()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    auto stub = Connect(receiver);
+    ExportSuccessfully(*stub, {});
+
+    Require(receiver.accepted_request_count() == 1,
+            "export did not increment the request count once");
+}
+
+void EmptyExportCountsZeroSpans()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    auto stub = Connect(receiver);
+    ExportSuccessfully(*stub, {});
+
+    Require(receiver.accepted_span_count() == 0,
+            "empty export contributed spans");
+}
+
+void CountsNestedSpans()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    auto stub = Connect(receiver);
+    ExportSuccessfully(*stub, MakeFiveSpanRequest());
+
+    Require(receiver.accepted_span_count() == 5,
+            "receiver did not count spans across resources and scopes");
+}
+
+void RejectsSecondStart()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+
+    bool rejected = false;
+    try {
+        receiver.Start();
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+
+    Require(rejected, "receiver instance accepted a second Start call");
+}
+
+void AllowsShutdownBeforeStart()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Shutdown();
+    receiver.Start();
+}
+
+void AllowsRepeatedShutdown()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    receiver.Shutdown();
+    receiver.Shutdown();
+}
+
+void RejectsRestartAfterShutdown()
+{
+    Receiver receiver{kEphemeralAddress};
+    receiver.Start();
+    receiver.Shutdown();
+
+    bool rejected = false;
+    try {
+        receiver.Start();
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+
+    Require(rejected, "stopped receiver instance restarted");
+}
+
+void DestructorReleasesPort()
+{
+    std::string selected_address;
+    {
+        Receiver receiver{kEphemeralAddress};
+        receiver.Start();
+        selected_address =
+            "127.0.0.1:" + std::to_string(receiver.selected_port());
+    }
+
+    Receiver replacement{selected_address};
+    replacement.Start();
+}
+
+void RejectsDuplicateBind()
+{
+    Receiver first_receiver{kBindConflictAddress};
+    first_receiver.Start();
+
+    bool rejected = false;
+    try {
+        Receiver second_receiver{kBindConflictAddress};
+        second_receiver.Start();
+    } catch (const std::runtime_error& error) {
+        rejected =
+            std::string{error.what()}.find(kBindConflictAddress) != std::string::npos;
+    }
+
+    Require(rejected, "second receiver did not report the fixed-port bind failure");
+}
+
+struct TestCase {
+    std::string_view name;
+    void (*run)();
+};
+
+constexpr std::array kTestCases{
+    TestCase{"rejects_empty_address", RejectsEmptyAddress},
+    TestCase{"starts_on_ephemeral_port", StartsOnEphemeralPort},
+    TestCase{"acknowledges_empty_export", AcknowledgesEmptyExport},
+    TestCase{"successful_export_omits_partial_success",
+             SuccessfulExportOmitsPartialSuccess},
+    TestCase{"counts_export_request", CountsExportRequest},
+    TestCase{"empty_export_counts_zero_spans", EmptyExportCountsZeroSpans},
+    TestCase{"counts_nested_spans", CountsNestedSpans},
+    TestCase{"rejects_second_start", RejectsSecondStart},
+    TestCase{"allows_shutdown_before_start", AllowsShutdownBeforeStart},
+    TestCase{"allows_repeated_shutdown", AllowsRepeatedShutdown},
+    TestCase{"rejects_restart_after_shutdown", RejectsRestartAfterShutdown},
+    TestCase{"destructor_releases_port", DestructorReleasesPort},
+    TestCase{"rejects_duplicate_bind", RejectsDuplicateBind},
+};
+
 } // namespace
 
-int main()
+int main(const int argc, const char* const argv[])
 {
-    TestContext context;
-
-    bool empty_address_rejected = false;
-    try {
-        silhouette::ingestion::OtlpGrpcReceiver receiver{""};
-    } catch (const std::invalid_argument&) {
-        empty_address_rejected = true;
-    }
-    context.Expect(empty_address_rejected,
-                   "an empty listen address is rejected");
-
-    {
-        silhouette::ingestion::OtlpGrpcReceiver receiver{"127.0.0.1:0"};
-        receiver.Shutdown();
-        receiver.Start();
-
-        context.Expect(receiver.selected_port() > 0,
-                       "ephemeral listen address selects a real port");
-
-        auto stub = Connect(receiver, context);
-
-        const auto empty_response = Export(*stub, {}, context);
-        context.Expect(!empty_response.has_partial_success(),
-                       "empty successful export leaves partial_success unset");
-        context.Expect(receiver.accepted_request_count() == 1,
-                       "empty export increments the request count");
-        context.Expect(receiver.accepted_span_count() == 0,
-                       "empty export contributes no spans");
-
-        const auto populated_response = Export(*stub, MakeFiveSpanRequest(), context);
-        context.Expect(!populated_response.has_partial_success(),
-                       "populated successful export leaves partial_success unset");
-        context.Expect(receiver.accepted_request_count() == 2,
-                       "both exports are counted");
-        context.Expect(receiver.accepted_span_count() == 5,
-                       "spans are counted across resources and scopes");
-
-        bool second_start_rejected = false;
-        try {
-            receiver.Start();
-        } catch (const std::logic_error&) {
-            second_start_rejected = true;
-        }
-        context.Expect(second_start_rejected,
-                       "a receiver instance cannot be started twice");
-
-        receiver.Shutdown();
-        receiver.Shutdown();
-
-        second_start_rejected = false;
-        try {
-            receiver.Start();
-        } catch (const std::logic_error&) {
-            second_start_rejected = true;
-        }
-        context.Expect(second_start_rejected,
-                       "a stopped receiver instance cannot be restarted");
-    }
-
-    {
-        silhouette::ingestion::OtlpGrpcReceiver receiver{"127.0.0.1:0"};
-        receiver.Start();
-    }
-
-    if (context.failure_count() != 0) {
-        std::cerr << context.failure_count() << " receiver test assertion(s) failed.\n";
+    if (argc != 2) {
+        std::cerr << "Expected exactly one receiver test-case name.\n";
         return 1;
     }
 
-    std::cout << "OTLP/gRPC receiver tests passed.\n";
-    return 0;
+    const std::string_view requested_case{argv[1]};
+    for (const auto& test_case : kTestCases) {
+        if (test_case.name != requested_case) {
+            continue;
+        }
+
+        try {
+            test_case.run();
+            std::cout << test_case.name << " passed.\n";
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << test_case.name << " failed: " << error.what() << '\n';
+            return 1;
+        }
+    }
+
+    std::cerr << "Unknown receiver test case: " << requested_case << '\n';
+    return 1;
 }

@@ -66,9 +66,10 @@ only.
   request/span counters, and fixed loopback executable wiring.
 - Added reproducible gRPC/protobuf dependency resolution and pinned generation
   from the official OpenTelemetry protocol definitions.
-- Added a CTest receiver client covering empty and populated success responses,
-  nested span counting, one-shot startup, repeated shutdown, and destructor
-  cleanup.
+- Added independent CTest receiver cases covering empty and populated success
+  responses, nested span counting, one-shot startup, repeated shutdown,
+  destructor cleanup, and clean rejection of a second receiver on the same
+  fixed port.
 - Verified the OpenTelemetry Python SDK/exporter 1.45.0 sent one OTLP/gRPC
   request containing three spans and received a successful acknowledgement;
   Silhouette reported the expected `1` request and `3` spans after Ctrl-C.

@@ -1,5 +1,6 @@
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
 
+#include <grpc/impl/channel_arg_names.h>
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
@@ -67,6 +68,7 @@ void OtlpGrpcReceiver::Start()
         accepted_request_count_, accepted_span_count_);
 
     grpc::ServerBuilder builder;
+    builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);
     int selected_port = 0;
     builder.AddListeningPort(
         listen_address_, grpc::InsecureServerCredentials(), &selected_port);
