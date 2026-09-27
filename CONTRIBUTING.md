@@ -4,16 +4,24 @@ Contributions should be focused, understandable, and verifiable.
 
 ## Setup and baseline checks
 
-Silhouette requires a C++20 compiler and CMake 3.24 or newer.
+Silhouette requires a C++20 compiler, CMake 3.24 or newer, and a bootstrapped
+[vcpkg](https://github.com/microsoft/vcpkg) checkout. Set `VCPKG_ROOT` to that
+checkout before configuring. The manifest installs the pinned gRPC and protobuf
+dependencies; CMake fetches the pinned OpenTelemetry protocol definitions.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/silhouette
 ```
 
-Keep generated build output under `build/`. If a change introduces a dependency, tool, or runtime requirement, document the reproducible setup in the same change.
+Keep generated build output and manifest-installed packages under `build/`. If a
+change introduces a dependency, tool, or runtime requirement, document the
+reproducible setup in the same change. Receiver tests bind a loopback port and
+therefore require local socket access.
 
 ## Before making a change
 
