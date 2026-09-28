@@ -10,8 +10,6 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    env:
-      VCPKG_ROOT: ${{ runner.temp }}/vcpkg
 
     steps:
       - name: Check out repository
@@ -19,14 +17,14 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Configure
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
         run: cmake --build build
