@@ -115,13 +115,51 @@ target_include_directories(
 )
 target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 
+add_library(silhouette_core
+    src/span.cpp
+    src/span_capture.cpp
+)
+target_compile_features(silhouette_core PUBLIC cxx_std_20)
+set_target_properties(silhouette_core PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(silhouette_core PUBLIC include)
+silhouette_enable_warnings(silhouette_core)
+
+add_library(silhouette_otlp_conversion
+    src/ingestion/otlp_span_converter.cpp
+)
+target_compile_features(silhouette_otlp_conversion PUBLIC cxx_std_20)
+set_target_properties(silhouette_otlp_conversion PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(
+    silhouette_otlp_conversion
+    PRIVATE
+        include
+        src
+)
+target_link_libraries(
+    silhouette_otlp_conversion
+    PRIVATE
+        silhouette_core
+        silhouette_otlp_proto
+)
+silhouette_enable_warnings(silhouette_otlp_conversion)
+
 add_library(silhouette_ingestion
     src/ingestion/otlp_grpc_receiver.cpp
 )
 target_compile_features(silhouette_ingestion PUBLIC cxx_std_20)
 set_target_properties(silhouette_ingestion PROPERTIES CXX_EXTENSIONS OFF)
-target_include_directories(silhouette_ingestion PUBLIC include)
-target_link_libraries(silhouette_ingestion PRIVATE silhouette_otlp_proto)
+target_include_directories(
+    silhouette_ingestion
+    PUBLIC include
+    PRIVATE src
+)
+target_link_libraries(
+    silhouette_ingestion
+    PUBLIC silhouette_core
+    PRIVATE
+        silhouette_otlp_conversion
+        silhouette_otlp_proto
+)
 silhouette_enable_warnings(silhouette_ingestion)
 
 add_executable(silhouette
