@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <latch>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -153,43 +154,78 @@ void ConcurrentBatchesPublishAtomically()
 {
     constexpr std::size_t kBatchSize = 3;
     constexpr std::size_t kWriterCount = 8;
+    constexpr std::size_t kExpectedSpanCount = kBatchSize * kWriterCount;
 
     SpanCapture capture;
-    std::atomic<bool> writers_done{false};
-    std::atomic<bool> observed_partial_batch{false};
+    std::latch writers_ready{kWriterCount};
+    std::latch start_writers{1};
+    std::latch writers_published{kWriterCount};
+    std::latch reader_observed_capture{1};
+    std::atomic<std::size_t> active_writers{0};
+    bool observed_partial_batch = false;
+    std::size_t observations_while_writers_active = 0;
 
     std::thread reader{[&] {
-        while (!writers_done.load(std::memory_order_acquire)) {
-            if (capture.Snapshot().size() % kBatchSize != 0) {
-                observed_partial_batch.store(true, std::memory_order_relaxed);
+        writers_ready.wait();
+        start_writers.count_down();
+
+        const auto observe_capture = [&] {
+            const auto active_before =
+                active_writers.load(std::memory_order_acquire);
+            const auto snapshot_size = capture.Snapshot().size();
+            const auto active_after =
+                active_writers.load(std::memory_order_acquire);
+
+            if (snapshot_size > 0 && active_before > 0 && active_after > 0) {
+                ++observations_while_writers_active;
             }
+            if (snapshot_size % kBatchSize != 0) {
+                observed_partial_batch = true;
+            }
+        };
+
+        while (!writers_published.try_wait()) {
+            observe_capture();
+            std::this_thread::yield();
         }
+        observe_capture();
+
+        reader_observed_capture.count_down();
     }};
 
     std::vector<std::thread> writers;
     writers.reserve(kWriterCount);
     for (std::size_t index = 0; index < kWriterCount; ++index) {
         writers.emplace_back([&, index] {
+            active_writers.fetch_add(1, std::memory_order_release);
+            writers_ready.count_down();
+            start_writers.wait();
+
             const auto marker = static_cast<std::uint8_t>(index + 1);
             capture.AppendBatch({
                 MakeSpan(marker, "one"),
                 MakeSpan(marker, "two"),
                 MakeSpan(marker, "three"),
             });
+
+            writers_published.count_down();
+            reader_observed_capture.wait();
+            active_writers.fetch_sub(1, std::memory_order_release);
         });
     }
 
+    reader.join();
     for (auto& writer : writers) {
         writer.join();
     }
-    writers_done.store(true, std::memory_order_release);
-    reader.join();
 
-    Require(!observed_partial_batch.load(std::memory_order_relaxed),
+    Require(observations_while_writers_active > 0,
+            "reader did not observe capture while writers were active");
+    Require(!observed_partial_batch,
             "snapshot observed part of a published batch");
-    Require(capture.size() == kBatchSize * kWriterCount,
+    Require(capture.size() == kExpectedSpanCount,
             "concurrent capture lost spans");
-    Require(capture.Snapshot().size() == kBatchSize * kWriterCount,
+    Require(capture.Snapshot().size() == kExpectedSpanCount,
             "concurrent snapshot lost spans");
 }
 

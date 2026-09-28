@@ -1,7 +1,9 @@
+find_package(Threads REQUIRED)
+
 add_executable(span_core_test span_core_test.cpp)
 target_compile_features(span_core_test PRIVATE cxx_std_20)
 set_target_properties(span_core_test PROPERTIES CXX_EXTENSIONS OFF)
-target_link_libraries(span_core_test PRIVATE silhouette_core)
+target_link_libraries(span_core_test PRIVATE silhouette_core Threads::Threads)
 silhouette_enable_warnings(span_core_test)
 
 function(add_span_core_test test_case)
