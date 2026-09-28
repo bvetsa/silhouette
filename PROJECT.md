@@ -44,7 +44,7 @@ Silhouette does **not** implement an OpenTelemetry SDK, instrumentation library,
 - Receive real OTLP trace data from an external instrumented application.
 - Operate as a finite capture: collect until a graceful Ctrl-C shutdown, then process the captured spans as a batch.
 - Support traces only. Metrics and logs are outside V1.
-- Choose one standard OTLP transport first; the choice between OTLP/gRPC and OTLP/HTTP remains open until implementation planning.
+- Use OTLP/gRPC as the first transport. A future OTLP/HTTP receiver may be added at the ingestion boundary without changing the core engine or its domain model.
 
 ### Minimal internal span information
 

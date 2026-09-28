@@ -42,16 +42,27 @@ The usage model is to start Silhouette, send it telemetry from a separate applic
 
 ## Build, test, and run
 
-Silhouette requires a C++20 compiler and CMake 3.24 or newer.
+Silhouette requires a C++20 compiler, CMake 3.24 or newer, and
+[vcpkg](https://github.com/microsoft/vcpkg). The manifest pins the gRPC and
+protobuf dependency versions. CMake downloads the pinned OpenTelemetry protocol
+definitions and generates their C++ bindings under `build/`.
+
+After cloning and bootstrapping vcpkg, set `VCPKG_ROOT` to that checkout and run:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/silhouette
 ```
 
-The executable target is `silhouette`. Stable runtime flags, telemetry endpoints, and output locations will be documented here when they are established; temporary behavior and open implementation decisions belong in `STATUS.md`.
+The `silhouette` executable listens for OTLP/gRPC trace exports on
+`127.0.0.1:4317`. Stop it with Ctrl-C; it waits for in-flight requests and then
+prints the accepted export-request and span totals. The receiver uses local
+insecure transport and does not yet define command-line configuration as a
+stable interface.
 
 ## Design priorities
 

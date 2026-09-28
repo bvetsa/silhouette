@@ -1,0 +1,13 @@
+{
+  "name": "silhouette",
+  "builtin-baseline": "6ade29bbd5a4c7e99439ec52adbc63c073953a57",
+  "dependencies": [
+    {
+      "name": "grpc",
+      "features": [
+        "codegen"
+      ]
+    },
+    "protobuf"
+  ]
+}
