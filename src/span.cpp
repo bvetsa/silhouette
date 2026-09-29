@@ -7,6 +7,8 @@ namespace silhouette {
 
 namespace {
 
+constexpr char kHexDigits[] = "0123456789abcdef";
+
 template <typename Bytes>
 std::optional<Bytes> CopyValidBytes(
     const std::span<const std::byte> bytes) noexcept
@@ -26,6 +28,19 @@ std::optional<Bytes> CopyValidBytes(
     Bytes copied_bytes;
     std::copy(bytes.begin(), bytes.end(), copied_bytes.begin());
     return copied_bytes;
+}
+
+template <typename Bytes>
+std::string BytesToHex(const Bytes& bytes)
+{
+    std::string result;
+    result.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+        const auto value = std::to_integer<unsigned int>(byte);
+        result.push_back(kHexDigits[value >> 4]);
+        result.push_back(kHexDigits[value & 0x0f]);
+    }
+    return result;
 }
 
 } // namespace
@@ -50,6 +65,11 @@ const TraceId::Bytes& TraceId::bytes() const noexcept
     return bytes_;
 }
 
+std::string TraceId::ToHex() const
+{
+    return BytesToHex(bytes_);
+}
+
 SpanId::SpanId(Bytes bytes) noexcept
     : bytes_{std::move(bytes)}
 {
@@ -68,6 +88,11 @@ std::optional<SpanId> SpanId::FromBytes(
 const SpanId::Bytes& SpanId::bytes() const noexcept
 {
     return bytes_;
+}
+
+std::string SpanId::ToHex() const
+{
+    return BytesToHex(bytes_);
 }
 
 } // namespace silhouette

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <compare>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -18,8 +19,10 @@ public:
         std::span<const std::byte> bytes) noexcept;
 
     [[nodiscard]] const Bytes& bytes() const noexcept;
+    [[nodiscard]] std::string ToHex() const;
 
     bool operator==(const TraceId&) const = default;
+    auto operator<=>(const TraceId&) const = default;
 
 private:
     explicit TraceId(Bytes bytes) noexcept;
@@ -36,8 +39,10 @@ public:
         std::span<const std::byte> bytes) noexcept;
 
     [[nodiscard]] const Bytes& bytes() const noexcept;
+    [[nodiscard]] std::string ToHex() const;
 
     bool operator==(const SpanId&) const = default;
+    auto operator<=>(const SpanId&) const = default;
 
 private:
     explicit SpanId(Bytes bytes) noexcept;

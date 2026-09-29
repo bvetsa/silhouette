@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 ## Current status
 
@@ -9,17 +9,20 @@ spans into a protobuf-independent C++ domain model and retains them in a
 thread-safe finite capture. Each export's accepted spans are published as one
 atomic batch. Spans with malformed trace, span, or non-empty parent IDs are
 rejected individually through OTLP partial success while valid siblings remain
-accepted.
+accepted. After shutdown, captured spans are grouped by trace ID, reconstructed
+without relying on arrival order, and printed as deterministic trace trees with
+explicit markers for incomplete or inconsistent evidence.
 
 ## Current task
 
-The OTLP span-conversion and in-memory-capture slice is complete. Core,
-converter, and receiver responsibilities now have separate automated tests.
+The finite-capture trace-reconstruction slice is complete. Core reconstruction
+and formatting preserve original span evidence while separating resolved,
+missing, ambiguous, and cyclic parent relationships.
 
 ## Next concrete step
 
-Group captured spans by trace ID and reconstruct their parent-child structure
-without relying on arrival order.
+Aggregate cross-service parent-child relationships from reconstructed traces
+without turning same-service child spans into service edges.
 
 ## Accepted decisions
 
@@ -47,6 +50,11 @@ without relying on arrival order.
 - Resource identity: the first exact-key, non-empty string `service.name` value wins; empty, non-string, and absent values become missing service identity.
 - Capture ownership: the application owns one thread-safe `SpanCapture`, and receivers publish complete converted export batches into it atomically.
 - Malformed span handling: reject only the malformed span, return OTLP partial success with an exact rejected count, and retain valid siblings.
+- Reconstruction ownership: reconstructed traces own their spans and use indices only as internal relationship references; index values and node storage positions are not semantic output.
+- Reconstruction ordering: traces use lexicographic trace-ID order, while top-level fragments and siblings use start time, span ID, end time, operation name, optional service identity, and optional parent identity, with absent optional values ordered first.
+- Parent resolution: missing and duplicate parent IDs remain unresolved, duplicate spans are retained, and original parent IDs are never rewritten.
+- Cycle handling: cycle detection considers only unambiguous resolved edges, detaches only edges between cycle members, and preserves resolved non-cycle children beneath those members.
+- Trace text output: missing service identity uses `<unknown-service>`; duplicate, missing-parent, ambiguous-parent, and cycle-parent evidence uses inline diagnostics.
 
 ## Open decisions
 
@@ -55,17 +63,24 @@ These should be decided only when authorized work requires them:
 - whether a dedicated unit-test framework becomes useful as behavior grows;
 - stable CLI flags, defaults, and output locations;
 - whether and when to add OTLP/HTTP after the gRPC path;
-- precise graph styling and observability-gap notation;
+- precise service-graph styling and graph observability-gap notation;
 
 An open decision is not permission for an agent to choose silently. Present options and tradeoffs when the decision becomes blocking, make the smallest reversible choice when authorized, and record the result here.
 
 ## Known issues
 
-No known conversion or receiver issues. Captured spans remain in memory only
-for the finite process lifetime and are not yet reconstructed or rendered.
+No known conversion, receiver, or trace-reconstruction issues. Captured and
+reconstructed spans remain in memory only for the finite process lifetime. A
+service graph and static graph rendering are not yet implemented.
 
 ## Latest work
 
+- Added deterministic trace grouping, parent resolution, duplicate-ID handling,
+  and cycle-safe reconstruction without changing original span evidence.
+- Added readable trace-tree output with canonical ID formatting and inline
+  diagnostics for incomplete or inconsistent telemetry.
+- Added direct reconstruction and formatting coverage for ordering, fragments,
+  ambiguity, cycles, unchanged parent IDs, and input-permutation stability.
 - Added validated binary trace/span value types and the minimal internal `Span`
   model without introducing protobuf dependencies into the core target.
 - Added application-owned capture storage that retains complete export batches
@@ -88,6 +103,5 @@ for the finite process lifetime and are not yet reconstructed or rendered.
 
 ## Deferred work
 
-Trace reconstruction, service aggregation, and graph output remain future work
-within the V1 contract.
+Service aggregation and graph output remain future work within the V1 contract.
 Possible post-V1 directions are listed in `ROADMAP.md`.

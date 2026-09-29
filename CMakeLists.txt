@@ -118,6 +118,7 @@ target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libpro
 add_library(silhouette_core
     src/span.cpp
     src/span_capture.cpp
+    src/trace_reconstruction.cpp
 )
 target_compile_features(silhouette_core PUBLIC cxx_std_20)
 set_target_properties(silhouette_core PROPERTIES CXX_EXTENSIONS OFF)
