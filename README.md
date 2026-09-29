@@ -61,15 +61,18 @@ ctest --test-dir build --output-on-failure
 The `silhouette` executable listens for OTLP/gRPC trace exports on
 `127.0.0.1:4317`. Stop it with Ctrl-C; it waits for in-flight requests and then
 prints the accepted export-request and span totals followed by deterministic
-reconstructed trace trees. Valid spans are converted to protobuf-independent
-values and retained in memory as complete export batches. Reconstruction groups
-spans by trace and resolves parent-child relationships without relying on
-arrival order. Missing or ambiguous parents, duplicate span IDs, parent cycles,
-and missing service identity remain visible in the text output rather than
-being silently repaired. Spans with malformed trace, span, or non-empty parent
-IDs are rejected individually through OTLP partial success and do not contribute
-to the accepted span total. The receiver uses local insecure transport and does
-not yet define command-line configuration as a stable interface.
+reconstructed trace trees and a deterministic service-graph summary. Valid spans
+are converted to protobuf-independent values and retained in memory as complete
+export batches. Reconstruction groups spans by trace and resolves parent-child
+relationships without relying on arrival order. Service aggregation retains all
+known services, collapses repeated resolved cross-service relationships, and
+does not turn same-service relationships into self-edges. Missing or ambiguous
+parents, parent cycles, and missing service identity remain visible as
+deduplicated graph gaps rather than being inferred or silently repaired. Spans
+with malformed trace, span, or non-empty parent IDs are rejected individually
+through OTLP partial success and do not contribute to the accepted span total.
+The receiver uses local insecure transport and does not yet define command-line
+configuration as a stable interface.
 
 ## Design priorities
 

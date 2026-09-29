@@ -40,6 +40,30 @@ add_trace_reconstruction_test(unresolved_edges_do_not_participate_in_cycle_detec
 add_trace_reconstruction_test(optional_tie_breakers_have_explicit_ordering)
 add_trace_reconstruction_test(output_is_stable_across_input_permutations)
 
+add_executable(service_graph_test service_graph_test.cpp)
+target_compile_features(service_graph_test PRIVATE cxx_std_20)
+set_target_properties(service_graph_test PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(service_graph_test PRIVATE silhouette_core)
+silhouette_enable_warnings(service_graph_test)
+
+function(add_service_graph_test test_case)
+    add_test(
+        NAME service_graph_${test_case}
+        COMMAND service_graph_test ${test_case}
+    )
+endfunction()
+
+add_service_graph_test(empty_graph_formats_all_sections)
+add_service_graph_test(known_services_and_cross_service_edges_are_aggregated)
+add_service_graph_test(repeated_and_same_service_relationships_are_collapsed)
+add_service_graph_test(isolated_services_and_components_are_retained)
+add_service_graph_test(duplicate_ids_follow_reconstruction_decisions)
+add_service_graph_test(missing_service_gaps_preserve_known_endpoints)
+add_service_graph_test(endpointless_missing_service_is_not_redundant)
+add_service_graph_test(parent_resolution_gaps_preserve_reasons)
+add_service_graph_test(cycle_gaps_keep_source_unknown_and_preserve_children)
+add_service_graph_test(output_is_stable_across_input_permutations)
+
 add_executable(otlp_span_converter_test otlp_span_converter_test.cpp)
 target_compile_features(otlp_span_converter_test PRIVATE cxx_std_20)
 set_target_properties(otlp_span_converter_test PROPERTIES CXX_EXTENSIONS OFF)

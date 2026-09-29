@@ -11,18 +11,21 @@ atomic batch. Spans with malformed trace, span, or non-empty parent IDs are
 rejected individually through OTLP partial success while valid siblings remain
 accepted. After shutdown, captured spans are grouped by trace ID, reconstructed
 without relying on arrival order, and printed as deterministic trace trees with
-explicit markers for incomplete or inconsistent evidence.
+explicit markers for incomplete or inconsistent evidence. Reconstructed traces
+are also aggregated into a deterministic service graph that retains known
+services, deduplicated cross-service edges, and explicit gap facts without
+re-resolving uncertain parent claims.
 
 ## Current task
 
-The finite-capture trace-reconstruction slice is complete. Core reconstruction
-and formatting preserve original span evidence while separating resolved,
-missing, ambiguous, and cyclic parent relationships.
+The service-graph aggregation slice is complete. Core aggregation and formatting
+project reconstructed evidence into known services, cross-service edges, and
+deduplicated graph-level uncertainty.
 
 ## Next concrete step
 
-Aggregate cross-service parent-child relationships from reconstructed traces
-without turning same-service child spans into service edges.
+Generate deterministic DOT and a simple static rendering from the aggregated
+service graph while keeping observability gaps visible.
 
 ## Accepted decisions
 
@@ -55,6 +58,9 @@ without turning same-service child spans into service edges.
 - Parent resolution: missing and duplicate parent IDs remain unresolved, duplicate spans are retained, and original parent IDs are never rewritten.
 - Cycle handling: cycle detection considers only unambiguous resolved edges, detaches only edges between cycle members, and preserves resolved non-cycle children beneath those members.
 - Trace text output: missing service identity uses `<unknown-service>`; duplicate, missing-parent, ambiguous-parent, and cycle-parent evidence uses inline diagnostics.
+- Service aggregation: retain every known service, create edges only from resolved cross-service relationships with known endpoints, and deduplicate services, edges, and gap facts deterministically.
+- Graph uncertainty: missing service identity and unresolved parent states are preserved as gap facts; cycle-parent sources remain unknown rather than being recovered from original parent IDs.
+- Service-graph text output: the executable prints an interim deterministic `Services`, `Edges`, and `Gaps` summary after the reconstructed trace trees.
 
 ## Open decisions
 
@@ -69,12 +75,20 @@ An open decision is not permission for an agent to choose silently. Present opti
 
 ## Known issues
 
-No known conversion, receiver, or trace-reconstruction issues. Captured and
-reconstructed spans remain in memory only for the finite process lifetime. A
-service graph and static graph rendering are not yet implemented.
+No known conversion, receiver, trace-reconstruction, or service-aggregation
+issues. Captured and reconstructed spans remain in memory only for the finite
+process lifetime. DOT output and static graph rendering are not yet implemented.
 
 ## Latest work
 
+- Added deterministic service aggregation over reconstructed parent decisions,
+  including isolated services, deduplicated cross-service edges, and no
+  same-service self-edges.
+- Added graph-level missing-service, missing-parent, ambiguous-parent, and
+  cycle-parent facts without speculative parent re-resolution.
+- Added a compact deterministic service-graph summary and direct coverage for
+  missing endpoints, duplicates, cycles, disconnected components, and input
+  permutation stability.
 - Added deterministic trace grouping, parent resolution, duplicate-ID handling,
   and cycle-safe reconstruction without changing original span evidence.
 - Added readable trace-tree output with canonical ID formatting and inline
@@ -103,5 +117,5 @@ service graph and static graph rendering are not yet implemented.
 
 ## Deferred work
 
-Service aggregation and graph output remain future work within the V1 contract.
-Possible post-V1 directions are listed in `ROADMAP.md`.
+DOT generation and static graph rendering remain future work within the V1
+contract. Possible post-V1 directions are listed in `ROADMAP.md`.
