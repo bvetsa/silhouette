@@ -37,6 +37,9 @@ struct ReconstructedTrace final {
 [[nodiscard]] std::vector<ReconstructedTrace> ReconstructTraces(
     std::vector<Span> spans);
 
+// Expects the structural invariants established by ReconstructTraces, including
+// valid parent, child, and top-level indices. This function formats those
+// results; it does not validate arbitrary ReconstructedTrace values.
 [[nodiscard]] std::string FormatReconstructedTraces(
     std::span<const ReconstructedTrace> traces);
 

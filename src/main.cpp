@@ -53,8 +53,7 @@ int main()
                   << receiver.accepted_span_count() << " span(s).\n"
                   << silhouette::FormatReconstructedTraces(traces);
     } catch (const std::exception& error) {
-        std::cerr << "Silhouette failed to start the OTLP/gRPC receiver: "
-                  << error.what() << '\n';
+        std::cerr << "Silhouette failed: " << error.what() << '\n';
         return 1;
     }
 
