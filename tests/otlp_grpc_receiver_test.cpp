@@ -1,15 +1,20 @@
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/span.h"
+#include "silhouette/span_capture.h"
 
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -24,6 +29,18 @@ void Require(const bool condition, const std::string_view message)
         throw std::runtime_error{std::string{message}};
     }
 }
+
+std::string MakeIdBytes(const std::size_t size, const std::uint8_t marker)
+{
+    std::string bytes(size, '\0');
+    bytes.back() = static_cast<char>(marker);
+    return bytes;
+}
+
+struct ReceiverFixture final {
+    silhouette::SpanCapture capture;
+    Receiver receiver{kEphemeralAddress, capture};
+};
 
 std::unique_ptr<otlp::TraceService::Stub> Connect(const Receiver& receiver)
 {
@@ -51,28 +68,26 @@ otlp::ExportTraceServiceResponse ExportSuccessfully(
     return response;
 }
 
-otlp::ExportTraceServiceRequest MakeFiveSpanRequest()
+void AddValidSpan(
+    otlp::ExportTraceServiceRequest& request,
+    const std::uint8_t trace_marker,
+    const std::uint8_t span_marker,
+    std::string name)
 {
-    otlp::ExportTraceServiceRequest request;
-
-    auto* first_resource = request.add_resource_spans();
-    auto* first_scope = first_resource->add_scope_spans();
-    first_scope->add_spans();
-    first_scope->add_spans();
-    first_resource->add_scope_spans()->add_spans();
-
-    auto* second_scope = request.add_resource_spans()->add_scope_spans();
-    second_scope->add_spans();
-    second_scope->add_spans();
-
-    return request;
+    auto* span = request.add_resource_spans()
+                     ->add_scope_spans()
+                     ->add_spans();
+    span->set_trace_id(MakeIdBytes(silhouette::TraceId::kSize, trace_marker));
+    span->set_span_id(MakeIdBytes(silhouette::SpanId::kSize, span_marker));
+    span->set_name(std::move(name));
 }
 
 void RejectsEmptyAddress()
 {
+    silhouette::SpanCapture capture;
     bool rejected = false;
     try {
-        Receiver receiver{""};
+        Receiver receiver{"", capture};
     } catch (const std::invalid_argument&) {
         rejected = true;
     }
@@ -82,73 +97,92 @@ void RejectsEmptyAddress()
 
 void StartsOnEphemeralPort()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
 
-    Require(receiver.selected_port() > 0, "receiver did not select a usable port");
+    Require(fixture.receiver.selected_port() > 0,
+            "receiver did not select a usable port");
 }
 
-void AcknowledgesEmptyExport()
+void EmptyExportIsAcceptedWithoutCapture()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    auto stub = Connect(receiver);
-
-    ExportSuccessfully(*stub, {});
-}
-
-void SuccessfulExportOmitsPartialSuccess()
-{
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    auto stub = Connect(receiver);
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
 
     const auto response = ExportSuccessfully(*stub, {});
+
     Require(!response.has_partial_success(),
-            "successful export unexpectedly set partial_success");
+            "empty successful export unexpectedly set partial_success");
+    Require(fixture.receiver.accepted_request_count() == 1,
+            "empty export did not increment the request count");
+    Require(fixture.receiver.accepted_span_count() == 0,
+            "empty export incremented the accepted-span count");
+    Require(fixture.capture.size() == 0,
+            "empty export published a capture batch");
 }
 
-void CountsExportRequest()
+void FullyValidExportPublishesCapture()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    auto stub = Connect(receiver);
-    ExportSuccessfully(*stub, {});
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
 
-    Require(receiver.accepted_request_count() == 1,
-            "export did not increment the request count once");
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 2, "checkout");
+    const auto response = ExportSuccessfully(*stub, request);
+
+    const auto snapshot = fixture.capture.Snapshot();
+    Require(!response.has_partial_success(),
+            "valid export unexpectedly set partial_success");
+    Require(fixture.receiver.accepted_request_count() == 1,
+            "valid export did not increment the request count");
+    Require(fixture.receiver.accepted_span_count() == 1,
+            "valid export did not increment the accepted-span count");
+    Require(snapshot.size() == 1, "valid export was not retained");
+    Require(snapshot[0].operation_name == "checkout",
+            "receiver published the wrong converted span");
 }
 
-void EmptyExportCountsZeroSpans()
+void PartiallyValidExportReportsRejection()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    auto stub = Connect(receiver);
-    ExportSuccessfully(*stub, {});
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
 
-    Require(receiver.accepted_span_count() == 0,
-            "empty export contributed spans");
-}
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "valid");
+    AddValidSpan(request, 2, 2, "invalid");
+    request.mutable_resource_spans(1)
+        ->mutable_scope_spans(0)
+        ->mutable_spans(0)
+        ->set_span_id(std::string(silhouette::SpanId::kSize, '\0'));
 
-void CountsNestedSpans()
-{
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    auto stub = Connect(receiver);
-    ExportSuccessfully(*stub, MakeFiveSpanRequest());
+    const auto response = ExportSuccessfully(*stub, request);
+    const auto snapshot = fixture.capture.Snapshot();
 
-    Require(receiver.accepted_span_count() == 5,
-            "receiver did not count spans across resources and scopes");
+    Require(response.has_partial_success(),
+            "partially valid export omitted partial_success");
+    Require(response.partial_success().rejected_spans() == 1,
+            "partial success reported the wrong rejected-span count");
+    Require(!response.partial_success().error_message().empty(),
+            "partial success omitted its explanation");
+    Require(fixture.receiver.accepted_request_count() == 1,
+            "partial export did not increment the request count");
+    Require(fixture.receiver.accepted_span_count() == 1,
+            "partial export counted a rejected span");
+    Require(snapshot.size() == 1 && snapshot[0].operation_name == "valid",
+            "partial export did not atomically publish only its valid span");
 }
 
 void RejectsSecondStart()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
 
     bool rejected = false;
     try {
-        receiver.Start();
+        fixture.receiver.Start();
     } catch (const std::logic_error&) {
         rejected = true;
     }
@@ -158,28 +192,28 @@ void RejectsSecondStart()
 
 void AllowsShutdownBeforeStart()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Shutdown();
-    receiver.Start();
+    ReceiverFixture fixture;
+    fixture.receiver.Shutdown();
+    fixture.receiver.Start();
 }
 
 void AllowsRepeatedShutdown()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    receiver.Shutdown();
-    receiver.Shutdown();
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
+    fixture.receiver.Shutdown();
+    fixture.receiver.Shutdown();
 }
 
 void RejectsRestartAfterShutdown()
 {
-    Receiver receiver{kEphemeralAddress};
-    receiver.Start();
-    receiver.Shutdown();
+    ReceiverFixture fixture;
+    fixture.receiver.Start();
+    fixture.receiver.Shutdown();
 
     bool rejected = false;
     try {
-        receiver.Start();
+        fixture.receiver.Start();
     } catch (const std::logic_error&) {
         rejected = true;
     }
@@ -190,27 +224,31 @@ void RejectsRestartAfterShutdown()
 void DestructorReleasesPort()
 {
     std::string selected_address;
+    silhouette::SpanCapture first_capture;
     {
-        Receiver receiver{kEphemeralAddress};
+        Receiver receiver{kEphemeralAddress, first_capture};
         receiver.Start();
         selected_address =
             "127.0.0.1:" + std::to_string(receiver.selected_port());
     }
 
-    Receiver replacement{selected_address};
+    silhouette::SpanCapture second_capture;
+    Receiver replacement{selected_address, second_capture};
     replacement.Start();
 }
 
 void RejectsDuplicateBind()
 {
-    Receiver first_receiver{kEphemeralAddress};
+    silhouette::SpanCapture first_capture;
+    Receiver first_receiver{kEphemeralAddress, first_capture};
     first_receiver.Start();
     const auto selected_address =
         "127.0.0.1:" + std::to_string(first_receiver.selected_port());
 
+    silhouette::SpanCapture second_capture;
     bool rejected = false;
     try {
-        Receiver second_receiver{selected_address};
+        Receiver second_receiver{selected_address, second_capture};
         second_receiver.Start();
     } catch (const std::runtime_error& error) {
         rejected =
@@ -228,12 +266,12 @@ struct TestCase {
 constexpr std::array kTestCases{
     TestCase{"rejects_empty_address", RejectsEmptyAddress},
     TestCase{"starts_on_ephemeral_port", StartsOnEphemeralPort},
-    TestCase{"acknowledges_empty_export", AcknowledgesEmptyExport},
-    TestCase{"successful_export_omits_partial_success",
-             SuccessfulExportOmitsPartialSuccess},
-    TestCase{"counts_export_request", CountsExportRequest},
-    TestCase{"empty_export_counts_zero_spans", EmptyExportCountsZeroSpans},
-    TestCase{"counts_nested_spans", CountsNestedSpans},
+    TestCase{"empty_export_is_accepted_without_capture",
+             EmptyExportIsAcceptedWithoutCapture},
+    TestCase{"fully_valid_export_publishes_capture",
+             FullyValidExportPublishesCapture},
+    TestCase{"partially_valid_export_reports_rejection",
+             PartiallyValidExportReportsRejection},
     TestCase{"rejects_second_start", RejectsSecondStart},
     TestCase{"allows_shutdown_before_start", AllowsShutdownBeforeStart},
     TestCase{"allows_repeated_shutdown", AllowsRepeatedShutdown},

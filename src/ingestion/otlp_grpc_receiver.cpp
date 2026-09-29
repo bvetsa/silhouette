@@ -1,11 +1,15 @@
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
 
+#include "ingestion/otlp_span_converter.h"
+
 #include <grpc/impl/channel_arg_names.h>
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
 #include <cstdint>
+#include <new>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace silhouette::ingestion {
@@ -14,9 +18,11 @@ namespace otlp = opentelemetry::proto::collector::trace::v1;
 
 class OtlpGrpcReceiver::TraceService final : public otlp::TraceService::Service {
 public:
-    TraceService(std::atomic<std::uint64_t>& accepted_request_count,
+    TraceService(SpanCapture& capture,
+                 std::atomic<std::uint64_t>& accepted_request_count,
                  std::atomic<std::uint64_t>& accepted_span_count)
-        : accepted_request_count_{accepted_request_count}
+        : capture_{capture}
+        , accepted_request_count_{accepted_request_count}
         , accepted_span_count_{accepted_span_count}
     {
     }
@@ -24,29 +30,47 @@ public:
     grpc::Status Export(
         grpc::ServerContext*,
         const otlp::ExportTraceServiceRequest* request,
-        otlp::ExportTraceServiceResponse*) override
+        otlp::ExportTraceServiceResponse* response) override
     {
-        std::uint64_t span_count = 0;
+        try {
+            auto conversion = detail::ConvertOtlpSpans(*request);
+            const auto accepted_span_count =
+                static_cast<std::uint64_t>(conversion.spans.size());
 
-        for (const auto& resource_spans : request->resource_spans()) {
-            for (const auto& scope_spans : resource_spans.scope_spans()) {
-                span_count += static_cast<std::uint64_t>(scope_spans.spans_size());
+            if (conversion.rejected_span_count > 0) {
+                auto* partial_success = response->mutable_partial_success();
+                partial_success->set_rejected_spans(
+                    conversion.rejected_span_count);
+                partial_success->set_error_message(
+                    "Silhouette rejected spans with an invalid trace, span, "
+                    "or parent span ID.");
             }
+
+            capture_.AppendBatch(std::move(conversion.spans));
+            accepted_span_count_.fetch_add(
+                accepted_span_count, std::memory_order_relaxed);
+            accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
+
+            return grpc::Status::OK;
+        } catch (const std::bad_alloc&) {
+            return {grpc::StatusCode::RESOURCE_EXHAUSTED,
+                    "Silhouette could not retain the exported spans"};
+        } catch (const std::exception&) {
+            return {grpc::StatusCode::INTERNAL,
+                    "Silhouette could not convert the exported spans"};
         }
-
-        accepted_span_count_.fetch_add(span_count, std::memory_order_relaxed);
-        accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
-
-        return grpc::Status::OK;
     }
 
 private:
+    SpanCapture& capture_;
     std::atomic<std::uint64_t>& accepted_request_count_;
     std::atomic<std::uint64_t>& accepted_span_count_;
 };
 
-OtlpGrpcReceiver::OtlpGrpcReceiver(std::string listen_address)
+OtlpGrpcReceiver::OtlpGrpcReceiver(
+    std::string listen_address, SpanCapture& capture)
     : listen_address_{std::move(listen_address)}
+    , capture_{capture}
 {
     if (listen_address_.empty()) {
         throw std::invalid_argument{"OTLP/gRPC listen address cannot be empty"};
@@ -65,7 +89,7 @@ void OtlpGrpcReceiver::Start()
     }
 
     auto service = std::make_unique<TraceService>(
-        accepted_request_count_, accepted_span_count_);
+        capture_, accepted_request_count_, accepted_span_count_);
 
     grpc::ServerBuilder builder;
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);

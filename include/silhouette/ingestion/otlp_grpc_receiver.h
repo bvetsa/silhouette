@@ -1,5 +1,7 @@
 #pragma once
 
+#include "silhouette/span_capture.h"
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -13,7 +15,8 @@ namespace silhouette::ingestion {
 
 class OtlpGrpcReceiver final {
 public:
-    explicit OtlpGrpcReceiver(std::string listen_address);
+    // capture must outlive this receiver and receives each accepted export batch.
+    OtlpGrpcReceiver(std::string listen_address, SpanCapture& capture);
     ~OtlpGrpcReceiver();
 
     OtlpGrpcReceiver(const OtlpGrpcReceiver&) = delete;
@@ -41,6 +44,7 @@ private:
     };
 
     std::string listen_address_;
+    SpanCapture& capture_;
     std::unique_ptr<TraceService> service_;
     std::unique_ptr<grpc::Server> server_;
     std::atomic<std::uint64_t> accepted_request_count_{0};

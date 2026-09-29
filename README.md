@@ -60,9 +60,12 @@ ctest --test-dir build --output-on-failure
 
 The `silhouette` executable listens for OTLP/gRPC trace exports on
 `127.0.0.1:4317`. Stop it with Ctrl-C; it waits for in-flight requests and then
-prints the accepted export-request and span totals. The receiver uses local
-insecure transport and does not yet define command-line configuration as a
-stable interface.
+prints the accepted export-request and span totals. Valid spans are converted
+to protobuf-independent values and retained in memory as complete export
+batches. Spans with malformed trace, span, or non-empty parent IDs are rejected
+individually through OTLP partial success and do not contribute to the accepted
+span total. The receiver uses local insecure transport and does not yet define
+command-line configuration as a stable interface.
 
 ## Design priorities
 

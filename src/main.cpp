@@ -1,4 +1,5 @@
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/span_capture.h"
 
 #include <chrono>
 #include <csignal>
@@ -32,7 +33,8 @@ int main()
     }
 
     try {
-        silhouette::ingestion::OtlpGrpcReceiver receiver{kListenAddress};
+        silhouette::SpanCapture capture;
+        silhouette::ingestion::OtlpGrpcReceiver receiver{kListenAddress, capture};
         receiver.Start();
 
         std::cout << "Silhouette is listening for OTLP/gRPC traces on "
