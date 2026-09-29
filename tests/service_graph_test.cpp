@@ -323,18 +323,22 @@ void EndpointlessMissingServiceIsNotRedundant()
 void ParentResolutionGapsPreserveReasons()
 {
     const auto graph = BuildGraph({
-        MakeSpan(1, 1, 9, 10, "missing", std::string{"missing-child"}),
+        MakeSpan(1, 1, 9, 10, "missing", std::string{"payments"}),
         MakeSpan(2, 2, std::nullopt, 10, "duplicate-one", std::string{"parent"}),
         MakeSpan(2, 2, std::nullopt, 20, "duplicate-two", std::string{"parent"}),
         MakeSpan(2, 3, 2, 30, "ambiguous", std::string{"ambiguous-child"}),
     });
 
     Require(
+        std::find(graph.services.begin(), graph.services.end(), "payments")
+            != graph.services.end(),
+        "known service on an unresolved span was not retained");
+    Require(
         HasGap(
             graph,
             ServiceGraphGapKind::missing_parent,
             std::nullopt,
-            std::string{"missing-child"}),
+            std::string{"payments"}),
         "missing-parent fact was not retained");
     Require(
         HasGap(

@@ -48,7 +48,7 @@ std::string_view GapKindName(const ServiceGraphGapKind kind)
         return "cycle_parent";
     }
 
-    return "missing_parent";
+    return "unknown_gap";
 }
 
 void AppendServiceEndpoint(
