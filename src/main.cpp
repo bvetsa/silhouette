@@ -1,4 +1,5 @@
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/service_graph.h"
 #include "silhouette/span_capture.h"
 #include "silhouette/trace_reconstruction.h"
 
@@ -47,11 +48,13 @@ int main()
 
         receiver.Shutdown();
         const auto traces = silhouette::ReconstructTraces(capture.Snapshot());
+        const auto service_graph = silhouette::BuildServiceGraph(traces);
 
         std::cout << "Silhouette stopped after accepting "
                   << receiver.accepted_request_count() << " export request(s) containing "
                   << receiver.accepted_span_count() << " span(s).\n"
-                  << silhouette::FormatReconstructedTraces(traces);
+                  << silhouette::FormatReconstructedTraces(traces) << '\n'
+                  << silhouette::FormatServiceGraph(service_graph);
     } catch (const std::exception& error) {
         std::cerr << "Silhouette failed: " << error.what() << '\n';
         return 1;
