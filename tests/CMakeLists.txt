@@ -64,6 +64,34 @@ add_service_graph_test(parent_resolution_gaps_preserve_reasons)
 add_service_graph_test(cycle_gaps_keep_source_unknown_and_preserve_children)
 add_service_graph_test(output_is_stable_across_input_permutations)
 
+add_executable(service_graph_rendering_test service_graph_rendering_test.cpp)
+target_compile_features(service_graph_rendering_test PRIVATE cxx_std_20)
+set_target_properties(service_graph_rendering_test PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(service_graph_rendering_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(service_graph_rendering_test PRIVATE silhouette_rendering)
+silhouette_enable_warnings(service_graph_rendering_test)
+
+function(add_service_graph_rendering_test test_case)
+    add_test(
+        NAME service_graph_rendering_${test_case}
+        COMMAND service_graph_rendering_test ${test_case}
+    )
+endfunction()
+
+add_service_graph_rendering_test(empty_graph_has_exact_legend)
+add_service_graph_rendering_test(known_topology_and_isolated_services)
+add_service_graph_rendering_test(service_labels_are_escaped)
+add_service_graph_rendering_test(missing_service_endpoint_combinations)
+add_service_graph_rendering_test(parent_gaps_have_distinct_shapes_and_colors)
+add_service_graph_rendering_test(gap_connections_use_only_stored_endpoints)
+add_service_graph_rendering_test(output_is_stable_across_capture_permutations)
+add_service_graph_rendering_test(real_graphviz_produces_svg)
+add_service_graph_rendering_test(dot_write_failure_has_file_context)
+if(UNIX)
+    add_service_graph_rendering_test(unavailable_graphviz_retains_dot_and_removes_stale_svg)
+    add_service_graph_rendering_test(failing_graphviz_removes_partial_svg)
+endif()
+
 add_executable(otlp_span_converter_test otlp_span_converter_test.cpp)
 target_compile_features(otlp_span_converter_test PRIVATE cxx_std_20)
 set_target_properties(otlp_span_converter_test PROPERTIES CXX_EXTENSIONS OFF)

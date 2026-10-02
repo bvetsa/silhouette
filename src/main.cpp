@@ -2,6 +2,7 @@
 #include "silhouette/service_graph.h"
 #include "silhouette/span_capture.h"
 #include "silhouette/trace_reconstruction.h"
+#include "rendering/service_graph_artifacts.h"
 
 #include <chrono>
 #include <csignal>
@@ -55,6 +56,20 @@ int main()
                   << receiver.accepted_span_count() << " span(s).\n"
                   << silhouette::FormatReconstructedTraces(traces) << '\n'
                   << silhouette::FormatServiceGraph(service_graph);
+
+        const auto artifacts =
+            silhouette::rendering::WriteServiceGraphArtifacts(service_graph);
+        std::cout << "Wrote service graph DOT to "
+                  << silhouette::rendering::kServiceGraphDotFilename << ".\n";
+        if (!artifacts.svg_rendered) {
+            std::cerr << "Capture, reconstruction, aggregation, and DOT succeeded, "
+                         "but SVG rendering failed: "
+                      << artifacts.render_error << ". DOT retained at "
+                      << silhouette::rendering::kServiceGraphDotFilename << ".\n";
+            return 1;
+        }
+        std::cout << "Rendered service graph SVG to "
+                  << silhouette::rendering::kServiceGraphSvgFilename << ".\n";
     } catch (const std::exception& error) {
         std::cerr << "Silhouette failed: " << error.what() << '\n';
         return 1;
