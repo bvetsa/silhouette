@@ -21,7 +21,7 @@ SVG with distinct gap shapes, colors, dashed diagnostics, and a legend.
 ## Current task
 
 The static service-graph rendering implementation is committed on
-`service-graph-rendering` as `8c68517` and ready for a pull request.
+`service-graph-rendering`  and ready for a pull request.
 Focused rendering tests, the full build/CTest suite, and external happy-path
 SDK and adversarial raw-OTLP captures passed. Both resulting SVGs were inspected.
 
