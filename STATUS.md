@@ -20,13 +20,14 @@ SVG with distinct gap shapes, colors, dashed diagnostics, and a legend.
 
 ## Current task
 
-The static service-graph rendering slice is complete and ready for review.
+The static service-graph rendering implementation is committed on
+`service-graph-rendering` as `8c68517` and ready for a pull request.
 Focused rendering tests, the full build/CTest suite, and external happy-path
 SDK and adversarial raw-OTLP captures passed. Both resulting SVGs were inspected.
 
 ## Next concrete step
 
-Review and merge the rendering slice after the existing Ubuntu PR CI passes,
+Open a pull request for the rendering slice and merge after Ubuntu PR CI passes,
 then review the V1 acceptance evidence. Do not start web UI or request playback
 work in this slice.
 
@@ -98,8 +99,9 @@ artifact paths and current styling do not establish stable CLI/design contracts.
 - Added direct DOT coverage and real, unavailable, and controlled failing
   Graphviz integration tests, plus Graphviz installation in existing Ubuntu CI.
 - Verified 11 focused rendering tests and all 50 CTest cases locally, plus the
-  full build and whitespace checks. Ubuntu CI has not yet been exercised for
-  this uncommitted rendering slice.
+  full build and whitespace checks.
+- As of 2026-10-02, no rendering pull request or PR-triggered workflow run was
+  found for committed branch head `8c68517`; Ubuntu PR CI remains unverified.
 - Verified external SDK OTLP capture through SVG: 7 export requests, 9 spans,
   1 trace, 7 services, 6 confirmed edges, and no gaps or self-edges.
 - Verified the design chat's adversarial raw-OTLP fixture through SVG: 1 export
