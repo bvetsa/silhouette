@@ -101,7 +101,7 @@ artifact paths and current styling do not establish stable CLI/design contracts.
 - Verified 11 focused rendering tests and all 50 CTest cases locally, plus the
   full build and whitespace checks.
 - As of 2026-10-02, no rendering pull request or PR-triggered workflow run was
-  found for committed branch head `8c68517`; Ubuntu PR CI remains unverified.
+  found for committed branch; Ubuntu PR CI remains unverified.
 - Verified external SDK OTLP capture through SVG: 7 export requests, 9 spans,
   1 trace, 7 services, 6 confirmed edges, and no gaps or self-edges.
 - Verified the design chat's adversarial raw-OTLP fixture through SVG: 1 export
