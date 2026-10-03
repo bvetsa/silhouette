@@ -1,6 +1,7 @@
+#include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
 #include "silhouette/span.h"
-#include "silhouette/span_capture.h"
+#include "active_trace_manager_test_peer.h"
 
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
@@ -9,17 +10,21 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iostream>
+#include <latch>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace {
 
 namespace otlp = opentelemetry::proto::collector::trace::v1;
 using Receiver = silhouette::ingestion::OtlpGrpcReceiver;
+using silhouette::testing::ActiveTraceManagerTestPeer;
 
 constexpr auto kEphemeralAddress = "127.0.0.1:0";
 
@@ -38,9 +43,19 @@ std::string MakeIdBytes(const std::size_t size, const std::uint8_t marker)
 }
 
 struct ReceiverFixture final {
-    silhouette::SpanCapture capture;
-    Receiver receiver{kEphemeralAddress, capture};
+    silhouette::ActiveTraceManager active_traces;
+    Receiver receiver{kEphemeralAddress, active_traces};
 };
+
+std::size_t RetainedSpanCount(const ReceiverFixture& fixture)
+{
+    const auto snapshot = fixture.active_traces.Snapshot();
+    std::size_t count = 0;
+    for (const auto& trace : snapshot) {
+        count += trace.spans.size();
+    }
+    return count;
+}
 
 std::unique_ptr<otlp::TraceService::Stub> Connect(const Receiver& receiver)
 {
@@ -84,10 +99,10 @@ void AddValidSpan(
 
 void RejectsEmptyAddress()
 {
-    silhouette::SpanCapture capture;
+    silhouette::ActiveTraceManager active_traces;
     bool rejected = false;
     try {
-        Receiver receiver{"", capture};
+        Receiver receiver{"", active_traces};
     } catch (const std::invalid_argument&) {
         rejected = true;
     }
@@ -104,7 +119,7 @@ void StartsOnEphemeralPort()
             "receiver did not select a usable port");
 }
 
-void EmptyExportIsAcceptedWithoutCapture()
+void EmptyExportIsAcceptedWithoutActiveTrace()
 {
     ReceiverFixture fixture;
     fixture.receiver.Start();
@@ -118,11 +133,13 @@ void EmptyExportIsAcceptedWithoutCapture()
             "empty export did not increment the request count");
     Require(fixture.receiver.accepted_span_count() == 0,
             "empty export incremented the accepted-span count");
-    Require(fixture.capture.size() == 0,
-            "empty export published a capture batch");
+    Require(fixture.active_traces.active_trace_count() == 0,
+            "empty export created an active trace");
+    Require(fixture.active_traces.Snapshot().empty(),
+            "empty export published active trace state");
 }
 
-void FullyValidExportPublishesCapture()
+void FullyValidExportPublishesActiveTraceState()
 {
     ReceiverFixture fixture;
     fixture.receiver.Start();
@@ -132,15 +149,16 @@ void FullyValidExportPublishesCapture()
     AddValidSpan(request, 1, 2, "checkout");
     const auto response = ExportSuccessfully(*stub, request);
 
-    const auto snapshot = fixture.capture.Snapshot();
+    const auto snapshot = fixture.active_traces.Snapshot();
     Require(!response.has_partial_success(),
             "valid export unexpectedly set partial_success");
     Require(fixture.receiver.accepted_request_count() == 1,
             "valid export did not increment the request count");
     Require(fixture.receiver.accepted_span_count() == 1,
             "valid export did not increment the accepted-span count");
-    Require(snapshot.size() == 1, "valid export was not retained");
-    Require(snapshot[0].operation_name == "checkout",
+    Require(snapshot.size() == 1 && snapshot.front().spans.size() == 1,
+            "valid export was not retained as one active trace");
+    Require(snapshot.front().spans.front().span.operation_name == "checkout",
             "receiver published the wrong converted span");
 }
 
@@ -159,7 +177,7 @@ void PartiallyValidExportReportsRejection()
         ->set_span_id(std::string(silhouette::SpanId::kSize, '\0'));
 
     const auto response = ExportSuccessfully(*stub, request);
-    const auto snapshot = fixture.capture.Snapshot();
+    const auto snapshot = fixture.active_traces.Snapshot();
 
     Require(response.has_partial_success(),
             "partially valid export omitted partial_success");
@@ -171,8 +189,65 @@ void PartiallyValidExportReportsRejection()
             "partial export did not increment the request count");
     Require(fixture.receiver.accepted_span_count() == 1,
             "partial export counted a rejected span");
-    Require(snapshot.size() == 1 && snapshot[0].operation_name == "valid",
+    Require(snapshot.size() == 1 && snapshot.front().spans.size() == 1
+                && snapshot.front().spans.front().span.operation_name == "valid",
             "partial export did not atomically publish only its valid span");
+}
+
+struct PublicationOrderSync final {
+    std::latch manager_before_commit{1};
+    std::latch allow_manager_commit{1};
+};
+
+void PauseManagerBeforeCommit(void* context) noexcept
+{
+    auto& sync = *static_cast<PublicationOrderSync*>(context);
+    sync.manager_before_commit.count_down();
+    sync.allow_manager_commit.wait();
+}
+
+void AcceptedSpanCountNeverLeadsPublishedState()
+{
+    ReceiverFixture fixture;
+    PublicationOrderSync sync;
+    ActiveTraceManagerTestPeer::SetBeforeCommitHook(
+        fixture.active_traces, PauseManagerBeforeCommit, &sync);
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
+
+    std::exception_ptr export_error;
+    std::thread exporter{[&] {
+        try {
+            otlp::ExportTraceServiceRequest request;
+            AddValidSpan(request, 1, 1, "operation");
+            ExportSuccessfully(*stub, request);
+        } catch (...) {
+            export_error = std::current_exception();
+        }
+    }};
+
+    sync.manager_before_commit.wait();
+    const auto span_count_before_publication =
+        fixture.receiver.accepted_span_count();
+    const auto request_count_before_publication =
+        fixture.receiver.accepted_request_count();
+    sync.allow_manager_commit.count_down();
+    exporter.join();
+
+    if (export_error) {
+        std::rethrow_exception(export_error);
+    }
+
+    Require(span_count_before_publication == 0,
+            "accepted-span count advanced before manager publication");
+    Require(request_count_before_publication == 0,
+            "accepted-request count advanced before manager publication");
+
+    const auto observed_count = fixture.receiver.accepted_span_count();
+    Require(observed_count == 1,
+            "receiver reported the wrong accepted-span count after publication");
+    Require(RetainedSpanCount(fixture) >= observed_count,
+            "published manager state did not cover the accepted-span count");
 }
 
 void RejectsSecondStart()
@@ -224,31 +299,31 @@ void RejectsRestartAfterShutdown()
 void DestructorReleasesPort()
 {
     std::string selected_address;
-    silhouette::SpanCapture first_capture;
+    silhouette::ActiveTraceManager first_active_traces;
     {
-        Receiver receiver{kEphemeralAddress, first_capture};
+        Receiver receiver{kEphemeralAddress, first_active_traces};
         receiver.Start();
         selected_address =
             "127.0.0.1:" + std::to_string(receiver.selected_port());
     }
 
-    silhouette::SpanCapture second_capture;
-    Receiver replacement{selected_address, second_capture};
+    silhouette::ActiveTraceManager second_active_traces;
+    Receiver replacement{selected_address, second_active_traces};
     replacement.Start();
 }
 
 void RejectsDuplicateBind()
 {
-    silhouette::SpanCapture first_capture;
-    Receiver first_receiver{kEphemeralAddress, first_capture};
+    silhouette::ActiveTraceManager first_active_traces;
+    Receiver first_receiver{kEphemeralAddress, first_active_traces};
     first_receiver.Start();
     const auto selected_address =
         "127.0.0.1:" + std::to_string(first_receiver.selected_port());
 
-    silhouette::SpanCapture second_capture;
+    silhouette::ActiveTraceManager second_active_traces;
     bool rejected = false;
     try {
-        Receiver second_receiver{selected_address, second_capture};
+        Receiver second_receiver{selected_address, second_active_traces};
         second_receiver.Start();
     } catch (const std::runtime_error& error) {
         rejected =
@@ -266,12 +341,14 @@ struct TestCase {
 constexpr std::array kTestCases{
     TestCase{"rejects_empty_address", RejectsEmptyAddress},
     TestCase{"starts_on_ephemeral_port", StartsOnEphemeralPort},
-    TestCase{"empty_export_is_accepted_without_capture",
-             EmptyExportIsAcceptedWithoutCapture},
-    TestCase{"fully_valid_export_publishes_capture",
-             FullyValidExportPublishesCapture},
+    TestCase{"empty_export_is_accepted_without_active_trace",
+             EmptyExportIsAcceptedWithoutActiveTrace},
+    TestCase{"fully_valid_export_publishes_active_trace_state",
+             FullyValidExportPublishesActiveTraceState},
     TestCase{"partially_valid_export_reports_rejection",
              PartiallyValidExportReportsRejection},
+    TestCase{"accepted_span_count_never_leads_published_state",
+             AcceptedSpanCountNeverLeadsPublishedState},
     TestCase{"rejects_second_start", RejectsSecondStart},
     TestCase{"allows_shutdown_before_start", AllowsShutdownBeforeStart},
     TestCase{"allows_repeated_shutdown", AllowsRepeatedShutdown},

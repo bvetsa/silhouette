@@ -18,10 +18,10 @@ namespace otlp = opentelemetry::proto::collector::trace::v1;
 
 class OtlpGrpcReceiver::TraceService final : public otlp::TraceService::Service {
 public:
-    TraceService(SpanCapture& capture,
+    TraceService(ActiveTraceManager& active_traces,
                  std::atomic<std::uint64_t>& accepted_request_count,
                  std::atomic<std::uint64_t>& accepted_span_count)
-        : capture_{capture}
+        : active_traces_{active_traces}
         , accepted_request_count_{accepted_request_count}
         , accepted_span_count_{accepted_span_count}
     {
@@ -46,7 +46,7 @@ public:
                     "or parent span ID.");
             }
 
-            capture_.AppendBatch(std::move(conversion.spans));
+            active_traces_.AppendBatch(std::move(conversion.spans));
             accepted_span_count_.fetch_add(
                 accepted_span_count, std::memory_order_relaxed);
             accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
@@ -57,20 +57,20 @@ public:
                     "Silhouette could not retain the exported spans"};
         } catch (const std::exception&) {
             return {grpc::StatusCode::INTERNAL,
-                    "Silhouette could not convert the exported spans"};
+                    "Silhouette could not process the exported spans"};
         }
     }
 
 private:
-    SpanCapture& capture_;
+    ActiveTraceManager& active_traces_;
     std::atomic<std::uint64_t>& accepted_request_count_;
     std::atomic<std::uint64_t>& accepted_span_count_;
 };
 
 OtlpGrpcReceiver::OtlpGrpcReceiver(
-    std::string listen_address, SpanCapture& capture)
+    std::string listen_address, ActiveTraceManager& active_traces)
     : listen_address_{std::move(listen_address)}
-    , capture_{capture}
+    , active_traces_{active_traces}
 {
     if (listen_address_.empty()) {
         throw std::invalid_argument{"OTLP/gRPC listen address cannot be empty"};
@@ -89,7 +89,7 @@ void OtlpGrpcReceiver::Start()
     }
 
     auto service = std::make_unique<TraceService>(
-        capture_, accepted_request_count_, accepted_span_count_);
+        active_traces_, accepted_request_count_, accepted_span_count_);
 
     grpc::ServerBuilder builder;
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);

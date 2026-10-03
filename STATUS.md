@@ -1,35 +1,33 @@
 # Project Status
 
-Last updated: 2026-10-02
+Last updated: 2026-10-03
 
 ## Current status
 
 Silhouette has a working OTLP/gRPC trace receiver that converts valid protocol
-spans into a protobuf-independent C++ domain model and retains them in a
-thread-safe finite capture. Each export's accepted spans are published as one
-atomic batch. Spans with malformed trace, span, or non-empty parent IDs are
-rejected individually through OTLP partial success while valid siblings remain
-accepted. After shutdown, captured spans are grouped by trace ID, reconstructed
-without relying on arrival order, and printed as deterministic trace trees with
-explicit markers for incomplete or inconsistent evidence. Reconstructed traces
-are also aggregated into a deterministic service graph that retains known
-services, deduplicated cross-service edges, and explicit gap facts without
-re-resolving uncertain parent claims. A separate presentation target serializes
-the service graph to deterministic DOT and uses Graphviz to produce a static
-SVG with distinct gap shapes, colors, dashed diagnostics, and a legend.
+spans into a protobuf-independent C++ domain model and publishes complete
+accepted export batches into an application-owned, thread-safe
+`ActiveTraceManager`. The receiver publishes each batch before incrementing its
+accepted-span counter. Fully owned reconstructed snapshots can be inspected
+while ingestion continues, and reconstruction occurs after the manager lock is
+released. Spans with malformed trace, span, or non-empty parent IDs are rejected
+individually through OTLP partial success while valid siblings remain accepted.
+The executable reports concise live active-trace and accepted-span counts. After
+shutdown, the latest snapshot is printed as deterministic trace trees and
+aggregated into the existing deterministic service graph, DOT, and SVG outputs.
 
 ## Current task
 
-The static service-graph rendering implementation is committed on
-`service-graph-rendering`  and ready for a pull request.
-Focused rendering tests, the full build/CTest suite, and external happy-path
-SDK and adversarial raw-OTLP captures passed. Both resulting SVGs were inspected.
+V2.1 continuous active-trace state is implemented on
+`v2-active-trace-state`, based on merged `main`. The active manager, receiver
+integration, concise live reporting, final V1 output path, and focused
+concurrency coverage are complete. A fresh build and all 60 CTest cases pass.
 
 ## Next concrete step
 
-Open a pull request for the rendering slice and merge after Ubuntu PR CI passes,
-then review the V1 acceptance evidence. Do not start web UI or request playback
-work in this slice.
+Review and merge V2.1, then implement trace quiescence and finalization as the
+next lifecycle slice. Do not add eviction, incremental topology, persistence,
+web UI, or request playback to V2.1.
 
 ## Accepted decisions
 
@@ -39,6 +37,7 @@ work in this slice.
 - Input: real OpenTelemetry traces over standard OTLP from the beginning.
 - Integration target: a completely separate existing instrumented application, used for manual testing only.
 - V1 lifecycle: finite in-memory capture stopped with Ctrl-C, followed by batch processing.
+- V2.1 lifecycle: continuously inspectable active traces with no finalization or eviction yet.
 - V1 output: textual trace diagnostics plus a simple DOT/static visual service map.
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
@@ -55,7 +54,9 @@ work in this slice.
 - Domain IDs: `TraceId` and `SpanId` are non-default-constructible fixed-size binary values; incorrect lengths and all-zero values are invalid, while individual zero bytes are valid.
 - Initial span model: trace ID, span ID, optional parent ID, optional service name, operation name, and start/end Unix nanoseconds. Status and error fields remain deferred until a concrete diagnostic needs them.
 - Resource identity: the first exact-key, non-empty string `service.name` value wins; empty, non-string, and absent values become missing service identity.
-- Capture ownership: the application owns one thread-safe `SpanCapture`, and receivers publish complete converted export batches into it atomically.
+- Active-trace ownership: the application owns one thread-safe `ActiveTraceManager`; receivers hold a non-owning reference and publish complete converted export batches into it atomically.
+- Publication ordering: the receiver publishes accepted spans before incrementing its accepted-span counter, so an observed counter value never leads retained manager state.
+- Snapshot semantics: snapshots own their reconstructed traces, remain unchanged during later ingestion, and copy evidence under the manager mutex before reconstructing outside it.
 - Malformed span handling: reject only the malformed span, return OTLP partial success with an exact rejected count, and retain valid siblings.
 - Reconstruction ownership: reconstructed traces own their spans and use indices only as internal relationship references; index values and node storage positions are not semantic output.
 - Reconstruction ordering: traces use lexicographic trace-ID order, while top-level fragments and siblings use start time, span ID, end time, operation name, optional service identity, and optional parent identity, with absent optional values ordered first.
@@ -86,12 +87,31 @@ An open decision is not permission for an agent to choose silently. Present opti
 ## Known issues
 
 No known conversion, receiver, trace-reconstruction, or service-aggregation
-issues. Captured and reconstructed spans remain in memory only for the finite
-process lifetime. SVG generation requires external Graphviz on `PATH`; fixed
-artifact paths and current styling do not establish stable CLI/design contracts.
+issues. V2.1 intentionally retains every observed trace for the process lifetime;
+quiescence, finalization, and bounded eviction are not implemented yet. SVG
+generation requires external Graphviz on `PATH`; fixed artifact paths, live
+messages, and current styling do not establish stable CLI/design contracts.
 
 ## Latest work
 
+- Replaced `SpanCapture` with an application-owned `ActiveTraceManager` that
+  retains active evidence in append-only per-trace batches without recopying
+  historical spans and returns owned reconstructed snapshots without
+  reconstructing under its mutex.
+- Preserved whole-export atomic publication and strong logical commit behavior:
+  an exception leaves shared trace state unchanged, and concurrent snapshots
+  observe either none or all of a batch.
+- Preserved receiver publication ordering by updating active state before the
+  accepted-span counter, with direct receiver coverage of the resulting
+  no-leading-counter invariant.
+- Added concise live active-trace/accepted-span updates while OTLP ingestion is
+  running and preserved final trace, service graph, DOT, and SVG output.
+- Added deterministic manager coverage for interleaved and out-of-order traces,
+  duplicate and missing-parent evidence, stable input permutations, owned
+  snapshots, distinct active counts, concurrent writers, and concurrent readers.
+- Verified a fresh build and all 60 CTest cases. A live external OpenTelemetry
+  Python exporter produced three pre-shutdown state updates, then final output
+  for three spans across two traces and valid DOT/SVG artifacts.
 - Added a separate rendering target with pure deterministic DOT serialization,
   escaped service labels, synthetic IDs, distinct gap visuals, and a legend.
 - Added fixed local DOT/SVG output with explicit renderer failure reporting and
@@ -100,8 +120,6 @@ artifact paths and current styling do not establish stable CLI/design contracts.
   Graphviz integration tests, plus Graphviz installation in existing Ubuntu CI.
 - Verified 11 focused rendering tests and all 50 CTest cases locally, plus the
   full build and whitespace checks.
-- As of 2026-10-02, no rendering pull request or PR-triggered workflow run was
-  found for committed branch; Ubuntu PR CI remains unverified.
 - Verified external SDK OTLP capture through SVG: 7 export requests, 9 spans,
   1 trace, 7 services, 6 confirmed edges, and no gaps or self-edges.
 - Verified the design chat's adversarial raw-OTLP fixture through SVG: 1 export
@@ -126,8 +144,6 @@ artifact paths and current styling do not establish stable CLI/design contracts.
   ambiguity, cycles, unchanged parent IDs, and input-permutation stability.
 - Added validated binary trace/span value types and the minimal internal `Span`
   model without introducing protobuf dependencies into the core target.
-- Added application-owned capture storage that retains complete export batches
-  under a mutex and returns flattened owned snapshots.
 - Added deterministic resource `service.name` extraction, per-span malformed-ID
   rejection, valid-sibling retention, and OTLP partial-success responses.
 - Split automated coverage into core/domain, direct converter, and focused
@@ -146,5 +162,6 @@ artifact paths and current styling do not establish stable CLI/design contracts.
 
 ## Deferred work
 
-Web rendering, live updates, and request playback remain outside this static
-rendering slice. Possible post-V1 directions are listed in `ROADMAP.md`.
+Trace quiescence/finalization, bounded retention, incremental topology, web
+rendering, and request playback remain deferred beyond V2.1. Candidate later
+directions remain listed in `ROADMAP.md`.

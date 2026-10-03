@@ -1,6 +1,6 @@
+#include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
 #include "silhouette/service_graph.h"
-#include "silhouette/span_capture.h"
 #include "silhouette/trace_reconstruction.h"
 #include "rendering/service_graph_artifacts.h"
 
@@ -36,19 +36,29 @@ int main()
     }
 
     try {
-        silhouette::SpanCapture capture;
-        silhouette::ingestion::OtlpGrpcReceiver receiver{kListenAddress, capture};
+        silhouette::ActiveTraceManager active_traces;
+        silhouette::ingestion::OtlpGrpcReceiver receiver{
+            kListenAddress, active_traces};
         receiver.Start();
 
         std::cout << "Silhouette is listening for OTLP/gRPC traces on "
                   << kListenAddress << ". Press Ctrl-C to stop." << std::endl;
 
+        std::uint64_t reported_span_count = 0;
         while (shutdown_signal == 0) {
+            const auto accepted_span_count = receiver.accepted_span_count();
+            if (accepted_span_count != reported_span_count) {
+                std::cout << "Live state: "
+                          << active_traces.active_trace_count()
+                          << " active trace(s), " << accepted_span_count
+                          << " accepted span(s)." << std::endl;
+                reported_span_count = accepted_span_count;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
         }
 
         receiver.Shutdown();
-        const auto traces = silhouette::ReconstructTraces(capture.Snapshot());
+        const auto traces = active_traces.Snapshot();
         const auto service_graph = silhouette::BuildServiceGraph(traces);
 
         std::cout << "Silhouette stopped after accepting "

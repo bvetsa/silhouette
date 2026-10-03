@@ -116,9 +116,9 @@ target_include_directories(
 target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 
 add_library(silhouette_core
+    src/active_trace_manager.cpp
     src/service_graph.cpp
     src/span.cpp
-    src/span_capture.cpp
     src/trace_reconstruction.cpp
 )
 target_compile_features(silhouette_core PUBLIC cxx_std_20)

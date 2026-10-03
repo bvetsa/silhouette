@@ -3,7 +3,7 @@ find_package(Threads REQUIRED)
 add_executable(span_core_test span_core_test.cpp)
 target_compile_features(span_core_test PRIVATE cxx_std_20)
 set_target_properties(span_core_test PROPERTIES CXX_EXTENSIONS OFF)
-target_link_libraries(span_core_test PRIVATE silhouette_core Threads::Threads)
+target_link_libraries(span_core_test PRIVATE silhouette_core)
 silhouette_enable_warnings(span_core_test)
 
 function(add_span_core_test test_case)
@@ -13,8 +13,34 @@ endfunction()
 add_span_core_test(valid_ids_allow_individual_zero_bytes)
 add_span_core_test(invalid_ids_are_rejected)
 add_span_core_test(span_preserves_domain_fields)
-add_span_core_test(capture_flattens_complete_batches)
-add_span_core_test(concurrent_batches_publish_atomically)
+
+add_executable(active_trace_manager_test active_trace_manager_test.cpp)
+target_compile_features(active_trace_manager_test PRIVATE cxx_std_20)
+set_target_properties(active_trace_manager_test PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(
+    active_trace_manager_test
+    PRIVATE silhouette_core Threads::Threads
+)
+silhouette_enable_warnings(active_trace_manager_test)
+
+function(add_active_trace_manager_test test_case)
+    add_test(
+        NAME active_trace_manager_${test_case}
+        COMMAND active_trace_manager_test ${test_case}
+    )
+endfunction()
+
+add_active_trace_manager_test(one_trace_receives_one_batch)
+add_active_trace_manager_test(one_trace_receives_multiple_batches)
+add_active_trace_manager_test(multiple_interleaved_traces_remain_independent)
+add_active_trace_manager_test(child_before_parent_reconstructs_after_later_batch)
+add_active_trace_manager_test(duplicate_span_ids_are_preserved)
+add_active_trace_manager_test(missing_parent_evidence_is_preserved)
+add_active_trace_manager_test(active_trace_count_tracks_distinct_ids)
+add_active_trace_manager_test(equivalent_arrival_orders_produce_stable_snapshots)
+add_active_trace_manager_test(returned_snapshots_remain_owned_and_unchanged)
+add_active_trace_manager_test(concurrent_append_batches_lose_no_spans)
+add_active_trace_manager_test(concurrent_batches_publish_atomically)
 
 add_executable(trace_reconstruction_test trace_reconstruction_test.cpp)
 target_compile_features(trace_reconstruction_test PRIVATE cxx_std_20)
@@ -146,9 +172,10 @@ endfunction()
 
 add_otlp_grpc_receiver_test(rejects_empty_address)
 add_otlp_grpc_receiver_test(starts_on_ephemeral_port)
-add_otlp_grpc_receiver_test(empty_export_is_accepted_without_capture)
-add_otlp_grpc_receiver_test(fully_valid_export_publishes_capture)
+add_otlp_grpc_receiver_test(empty_export_is_accepted_without_active_trace)
+add_otlp_grpc_receiver_test(fully_valid_export_publishes_active_trace_state)
 add_otlp_grpc_receiver_test(partially_valid_export_reports_rejection)
+add_otlp_grpc_receiver_test(accepted_span_count_never_leads_published_state)
 add_otlp_grpc_receiver_test(rejects_second_start)
 add_otlp_grpc_receiver_test(allows_shutdown_before_start)
 add_otlp_grpc_receiver_test(allows_repeated_shutdown)

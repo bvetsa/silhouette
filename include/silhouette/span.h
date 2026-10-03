@@ -22,7 +22,7 @@ public:
     [[nodiscard]] std::string ToHex() const;
 
     bool operator==(const TraceId&) const = default;
-    auto operator<=>(const TraceId&) const = default;
+    auto operator<=>(const TraceId&) const noexcept = default;
 
 private:
     explicit TraceId(Bytes bytes) noexcept;
