@@ -70,3 +70,7 @@ Testing/
 
 # personal configs
 .vscode/
+
+# V1 local graph output
+/silhouette.dot
+/silhouette.svg

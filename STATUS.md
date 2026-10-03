@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-09-29
+Last updated: 2026-10-02
 
 ## Current status
 
@@ -14,18 +14,22 @@ without relying on arrival order, and printed as deterministic trace trees with
 explicit markers for incomplete or inconsistent evidence. Reconstructed traces
 are also aggregated into a deterministic service graph that retains known
 services, deduplicated cross-service edges, and explicit gap facts without
-re-resolving uncertain parent claims.
+re-resolving uncertain parent claims. A separate presentation target serializes
+the service graph to deterministic DOT and uses Graphviz to produce a static
+SVG with distinct gap shapes, colors, dashed diagnostics, and a legend.
 
 ## Current task
 
-The service-graph aggregation slice is complete. Core aggregation and formatting
-project reconstructed evidence into known services, cross-service edges, and
-deduplicated graph-level uncertainty.
+The static service-graph rendering implementation is committed on
+`service-graph-rendering`  and ready for a pull request.
+Focused rendering tests, the full build/CTest suite, and external happy-path
+SDK and adversarial raw-OTLP captures passed. Both resulting SVGs were inspected.
 
 ## Next concrete step
 
-Generate deterministic DOT and a simple static rendering from the aggregated
-service graph while keeping observability gaps visible.
+Open a pull request for the rendering slice and merge after Ubuntu PR CI passes,
+then review the V1 acceptance evidence. Do not start web UI or request playback
+work in this slice.
 
 ## Accepted decisions
 
@@ -40,7 +44,7 @@ service graph while keeping observability gaps visible.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
 - Development strategy: vertical progress, just-in-time learning, and measurement before optimization.
 - Build baseline: CMake 3.24 or newer, C++20 with compiler extensions disabled, and standard warnings without warnings-as-errors.
-- Repository layout: a protobuf-free core library, private OTLP conversion, generated protocol bindings, a focused ingestion library, the `silhouette` executable, and checks under `tests/`; add further boundaries only when implemented behavior requires them.
+- Repository layout: a protobuf-free core library, private OTLP conversion, generated protocol bindings, a focused ingestion library, a separate rendering library, the `silhouette` executable, and checks under `tests/`; add further boundaries only when implemented behavior requires them.
 - Verification framework: built-in CTest with a small test executable and no dedicated third-party test framework.
 - Executable target: `silhouette`. Its runtime messages and lack of command-line flags do not establish a stable CLI contract.
 - Initial trace transport: synchronous unary OTLP/gRPC on loopback port 4317 using insecure local credentials.
@@ -61,6 +65,12 @@ service graph while keeping observability gaps visible.
 - Service aggregation: retain every known service, create edges only from resolved cross-service relationships with known endpoints, and deduplicate services, edges, and gap facts deterministically.
 - Graph uncertainty: missing service identity and unresolved parent states are preserved as gap facts; cycle-parent sources remain unknown rather than being recovered from original parent IDs.
 - Service-graph text output: the executable prints an interim deterministic `Services`, `Edges`, and `Gaps` summary after the reconstructed trace trees.
+- Rendering boundaries: `ServiceGraph` is canonical; pure `FormatServiceGraphDot()` is reusable presentation, while private `WriteServiceGraphArtifacts()` is only a V1 local CLI convenience. Core has no rendering or Graphviz dependency.
+- DOT identity and ordering: synthetic `service_N`/`gap_N` IDs follow the graph's deterministic ordering; service names are escaped labels, never identifiers or shell arguments.
+- Gap visuals: missing service uses an amber diamond, missing parent a red triangle, ambiguous parent a purple hexagon, and cycle parent a teal octagon. An embedded legend distinguishes solid confirmed dependencies from dashed diagnostics.
+- Gap connections: use only the source/destination endpoints stored in each gap, never infer or re-resolve endpoints from traces or gap kind. No synthetic unknown-service node is added.
+- Local artifacts: overwrite fixed `silhouette.dot`/`silhouette.svg` files in the working directory after capture. Keep DOT, remove stale/partial SVG, identify Graphviz/rendering errors, and return nonzero on SVG failure; report cleanup failures explicitly.
+- Graphviz: install locally through the platform package manager and in Ubuntu CI with `apt`; it is not a core or vcpkg dependency. Invocation uses only fixed arguments and filenames.
 
 ## Open decisions
 
@@ -69,7 +79,7 @@ These should be decided only when authorized work requires them:
 - whether a dedicated unit-test framework becomes useful as behavior grows;
 - stable CLI flags, defaults, and output locations;
 - whether and when to add OTLP/HTTP after the gRPC path;
-- precise service-graph styling and graph observability-gap notation;
+- future presentation design beyond the initial static map;
 
 An open decision is not permission for an agent to choose silently. Present options and tradeoffs when the decision becomes blocking, make the smallest reversible choice when authorized, and record the result here.
 
@@ -77,10 +87,29 @@ An open decision is not permission for an agent to choose silently. Present opti
 
 No known conversion, receiver, trace-reconstruction, or service-aggregation
 issues. Captured and reconstructed spans remain in memory only for the finite
-process lifetime. DOT output and static graph rendering are not yet implemented.
+process lifetime. SVG generation requires external Graphviz on `PATH`; fixed
+artifact paths and current styling do not establish stable CLI/design contracts.
 
 ## Latest work
 
+- Added a separate rendering target with pure deterministic DOT serialization,
+  escaped service labels, synthetic IDs, distinct gap visuals, and a legend.
+- Added fixed local DOT/SVG output with explicit renderer failure reporting and
+  stale/partial SVG cleanup; the DOT artifact survives renderer failure.
+- Added direct DOT coverage and real, unavailable, and controlled failing
+  Graphviz integration tests, plus Graphviz installation in existing Ubuntu CI.
+- Verified 11 focused rendering tests and all 50 CTest cases locally, plus the
+  full build and whitespace checks.
+- As of 2026-10-02, no rendering pull request or PR-triggered workflow run was
+  found for committed branch; Ubuntu PR CI remains unverified.
+- Verified external SDK OTLP capture through SVG: 7 export requests, 9 spans,
+  1 trace, 7 services, 6 confirmed edges, and no gaps or self-edges.
+- Verified the design chat's adversarial raw-OTLP fixture through SVG: 1 export
+  request, 16 spans, 4 traces, 11 services, 5 confirmed edges, and 7 gap facts.
+  Visually checked all four gap types and the legend; valid cycle-member
+  children survive, with no speculative edges or synthetic unknown services.
+- Verified the actual CLI with a controlled failing `dot`: nonzero exit,
+  Graphviz/rendering error, retained DOT, and removed stale/partial SVG.
 - Added deterministic service aggregation over reconstructed parent decisions,
   including isolated services, deduplicated cross-service edges, and no
   same-service self-edges.
@@ -117,5 +146,5 @@ process lifetime. DOT output and static graph rendering are not yet implemented.
 
 ## Deferred work
 
-DOT generation and static graph rendering remain future work within the V1
-contract. Possible post-V1 directions are listed in `ROADMAP.md`.
+Web rendering, live updates, and request playback remain outside this static
+rendering slice. Possible post-V1 directions are listed in `ROADMAP.md`.

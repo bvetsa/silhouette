@@ -126,6 +126,16 @@ set_target_properties(silhouette_core PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(silhouette_core PUBLIC include)
 silhouette_enable_warnings(silhouette_core)
 
+add_library(silhouette_rendering
+    src/rendering/service_graph_dot.cpp
+    src/rendering/service_graph_artifacts.cpp
+)
+target_compile_features(silhouette_rendering PUBLIC cxx_std_20)
+set_target_properties(silhouette_rendering PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(silhouette_rendering PUBLIC include PRIVATE src)
+target_link_libraries(silhouette_rendering PUBLIC silhouette_core)
+silhouette_enable_warnings(silhouette_rendering)
+
 add_library(silhouette_otlp_conversion
     src/ingestion/otlp_span_converter.cpp
 )
@@ -169,7 +179,8 @@ add_executable(silhouette
 )
 target_compile_features(silhouette PRIVATE cxx_std_20)
 set_target_properties(silhouette PROPERTIES CXX_EXTENSIONS OFF)
-target_link_libraries(silhouette PRIVATE silhouette_ingestion)
+target_include_directories(silhouette PRIVATE src)
+target_link_libraries(silhouette PRIVATE silhouette_ingestion silhouette_rendering)
 silhouette_enable_warnings(silhouette)
 
 include(CTest)

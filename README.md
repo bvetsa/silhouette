@@ -47,6 +47,14 @@ Silhouette requires a C++20 compiler, CMake 3.24 or newer, and
 protobuf dependency versions. CMake downloads the pinned OpenTelemetry protocol
 definitions and generates their C++ bindings under `build/`.
 
+Install [Graphviz](https://graphviz.org/) so `dot` is available on `PATH` for
+SVG output and the rendering integration tests:
+
+```bash
+brew install graphviz                 # macOS
+sudo apt-get install graphviz         # Ubuntu
+```
+
 After cloning and bootstrapping vcpkg, set `VCPKG_ROOT` to that checkout and run:
 
 ```bash
@@ -73,6 +81,30 @@ with malformed trace, span, or non-empty parent IDs are rejected individually
 through OTLP partial success and do not contribute to the accepted span total.
 The receiver uses local insecure transport and does not yet define command-line
 configuration as a stable interface.
+
+After printing the traces and service summary, Silhouette writes deterministic
+`silhouette.dot` and renders `silhouette.svg` in the current working directory.
+These fixed files are overwritten on each run. Open the SVG in a browser to
+inspect the static map. Known services are blue rounded boxes, and confirmed
+observed dependencies are solid directed edges. Gap facts use colored shapes
+(amber diamond for missing service identity, red triangle for missing parent,
+purple hexagon for ambiguous parent, teal octagon for cycle parent), with an
+embedded legend. Dashed diagnostic connections use only the endpoints retained
+in each gap fact; unknown endpoints are never recovered or drawn as synthetic
+services. Endpoint-less gaps remain standalone diagnostic nodes.
+
+If Graphviz is unavailable or rendering fails, the executable reports a
+Graphviz/rendering error and returns a nonzero status. The DOT file is retained,
+and stale or partial SVG output is removed; a cleanup failure is reported if the
+filesystem prevents removal. DOT write failures report the file context.
+
+`ServiceGraph` remains the architecture model. The separate
+`silhouette_rendering` target provides the pure `FormatServiceGraphDot()`
+presentation boundary without adding rendering dependencies to
+`silhouette_core`. Its private `WriteServiceGraphArtifacts()` helper is only a
+V1 local CLI convenience, not a long-term renderer interface. Future web
+renderers can consume `ServiceGraph` or DOT, and request playback can consume
+`ReconstructedTrace` without changing the aggregate graph.
 
 ## Design priorities
 
