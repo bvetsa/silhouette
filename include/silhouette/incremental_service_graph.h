@@ -23,7 +23,9 @@ public:
     IncrementalServiceGraph(IncrementalServiceGraph&&) = delete;
     IncrementalServiceGraph& operator=(IncrementalServiceGraph&&) = delete;
 
-    // Atomically replaces the contributions of every supplied trace.
+    // Atomically replaces the observable contributions of every supplied
+    // trace. If preparation fails, Snapshot() continues to return the previous
+    // graph; invisible empty or zero-count bookkeeping entries may remain.
     void UpdateTraces(std::span<const ReconstructedTrace> traces);
 
     // Failure-recovery path: atomically rebuilds every contribution.

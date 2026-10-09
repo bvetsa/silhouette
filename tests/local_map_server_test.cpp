@@ -1,5 +1,6 @@
 #include "silhouette/local_map_server.h"
 #include "silhouette/rendering/service_graph_renderer.h"
+#include "local_map_server_test_peer.h"
 
 #include <httplib.h>
 
@@ -28,6 +29,7 @@ using silhouette::SpanId;
 using silhouette::TraceId;
 using silhouette::rendering::ServiceGraphRenderer;
 using silhouette::rendering::SvgRenderResult;
+using silhouette::testing::LocalMapServerTestPeer;
 
 void Require(const bool condition, const std::string_view message)
 {
@@ -182,6 +184,46 @@ void SsePublishesRenderedVersionAndServerShutdownWakesWaiter()
             "SSE did not publish the rendered topology version");
 }
 
+void SseHeartbeatWakesIdleStreamAndDetectsDisconnect()
+{
+    ActiveTraceManager active_traces;
+    SvgRenderer renderer;
+    std::ostringstream diagnostics;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServerTestPeer::UseSingleWorker(server);
+    live_map.Start();
+    const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
+    Require(initial.has_value(), "initial SVG was not published");
+    server.Start();
+
+    std::latch received_heartbeat{1};
+    std::thread event_client{[&] {
+        auto client = MakeClient(server.selected_port());
+        std::string received;
+        static_cast<void>(client.Get(
+            "/events", [&](const char* data, const std::size_t size) {
+                received.append(data, size);
+                if (received.find(": keep-alive\n\n") != std::string::npos) {
+                    received_heartbeat.count_down();
+                    return false;
+                }
+                return true;
+            }));
+    }};
+
+    received_heartbeat.wait();
+    event_client.join();
+
+    auto client = MakeClient(server.selected_port());
+    const auto viewer = client.Get("/");
+    Require(viewer && viewer->status == 200,
+            "disconnected idle SSE stream did not release its only worker");
+
+    server.Shutdown();
+    live_map.CloseAndDrain();
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -192,6 +234,8 @@ constexpr std::array kTestCases{
              ServesViewerAndLatestOwnedSvg},
     TestCase{"sse_publishes_rendered_version_and_server_shutdown_wakes_waiter",
              SsePublishesRenderedVersionAndServerShutdownWakesWaiter},
+    TestCase{"sse_heartbeat_wakes_idle_stream_and_detects_disconnect",
+             SseHeartbeatWakesIdleStreamAndDetectsDisconnect},
 };
 
 } // namespace

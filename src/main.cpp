@@ -51,13 +51,23 @@ int main()
             kListenAddress, active_traces, &live_map};
 
         live_map.Start();
-        map_server.Start();
+        bool map_server_started = false;
+        try {
+            map_server.Start();
+            map_server_started = true;
+        } catch (const std::exception& error) {
+            std::cerr << "Silhouette live map server failed to start: "
+                      << error.what() << ". OTLP ingestion will continue.\n";
+        }
         receiver.Start();
 
         std::cout << "Silhouette is listening for OTLP/gRPC traces on "
-                  << kListenAddress << ".\nService map available at http://"
-                  << kMapListenAddress << ':' << kMapPort
-                  << ".\nPress Ctrl-C to stop." << std::endl;
+                  << kListenAddress << ".\n";
+        if (map_server_started) {
+            std::cout << "Service map available at http://"
+                      << kMapListenAddress << ':' << kMapPort << ".\n";
+        }
+        std::cout << "Press Ctrl-C to stop." << std::endl;
 
         std::uint64_t reported_span_count = 0;
         while (shutdown_signal == 0) {

@@ -2,11 +2,13 @@
 
 #include <httplib.h>
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -55,6 +57,9 @@ constexpr auto kViewerHtml = R"HTML(<!doctype html>
 </body>
 </html>)HTML";
 
+constexpr auto kSseHeartbeatInterval = std::chrono::seconds{1};
+constexpr std::string_view kSseHeartbeat = ": keep-alive\n\n";
+
 } // namespace
 
 class LocalMapServer::Impl final {
@@ -99,11 +104,22 @@ public:
                 [this, stop_token,
                  version = std::optional<std::uint64_t>{}]
                 (std::size_t, httplib::DataSink& sink) mutable {
-                    const auto published =
-                        live_map_.WaitForPublishedAfter(version, stop_token);
-                    if (!published) {
+                    if (!sink.is_writable()) {
                         sink.done();
                         return false;
+                    }
+                    const auto published =
+                        live_map_.WaitForPublishedAfter(
+                            version, kSseHeartbeatInterval, stop_token);
+                    if (!published) {
+                        if (stop_token.stop_requested()
+                            || live_map_.publisher_stopped()
+                            || !sink.is_writable()) {
+                            sink.done();
+                            return false;
+                        }
+                        return sink.write(
+                            kSseHeartbeat.data(), kSseHeartbeat.size());
                     }
                     const auto event = "event: graph-updated\nid: "
                         + std::to_string(published->rendered_version)
@@ -156,6 +172,17 @@ public:
         started_ = false;
     }
 
+    void UseSingleWorkerForTesting()
+    {
+        if (started_once_) {
+            throw std::logic_error{
+                "live map worker count cannot change after startup"};
+        }
+        server_.new_task_queue = [] {
+            return new httplib::ThreadPool{1, 1};
+        };
+    }
+
     [[nodiscard]] int selected_port() const noexcept { return selected_port_; }
 
 private:
@@ -183,5 +210,9 @@ LocalMapServer::~LocalMapServer() = default;
 void LocalMapServer::Start() { impl_->Start(); }
 void LocalMapServer::Shutdown() noexcept { impl_->Shutdown(); }
 int LocalMapServer::selected_port() const noexcept { return impl_->selected_port(); }
+void LocalMapServer::UseSingleWorkerForTesting()
+{
+    impl_->UseSingleWorkerForTesting();
+}
 
 } // namespace silhouette

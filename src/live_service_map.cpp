@@ -61,18 +61,25 @@ void LiveServiceMap::Start()
 void LiveServiceMap::NotifyTracesDirty(
     std::vector<TraceId> trace_ids) noexcept
 {
+    std::scoped_lock lock{dirty_mutex_};
+    if (invalidation_input_closed_) {
+        return;
+    }
     try {
-        std::scoped_lock lock{dirty_mutex_};
-        if (invalidation_input_closed_) {
-            return;
+        for (const auto& trace_id : trace_ids) {
+            if (before_dirty_insert_hook_) {
+                before_dirty_insert_hook_(before_dirty_insert_context_);
+            }
+            dirty_trace_ids_.insert(trace_id);
+            if (after_dirty_insert_hook_) {
+                after_dirty_insert_hook_(after_dirty_insert_context_);
+            }
         }
-        if (before_dirty_merge_hook_) {
-            before_dirty_merge_hook_(before_dirty_merge_context_);
-        }
-        dirty_trace_ids_.insert(trace_ids.begin(), trace_ids.end());
     } catch (...) {
-        // The dirty set may now contain a partial merge. It remains advisory
-        // until the worker completes a full authoritative replacement.
+        // Once dirty-set insertion fails, the dirty set is advisory only until
+        // ReplaceAll() successfully resynchronizes from ActiveTraceManager.
+        // Publish the wait predicate under its mutex so the worker cannot miss
+        // the recovery notification when even the first insertion failed.
         resync_requests_.fetch_add(1, std::memory_order_relaxed);
     }
     dirty_cv_.notify_one();
@@ -135,6 +142,30 @@ std::optional<PublishedServiceMap> LiveServiceMap::WaitForPublishedAfter(
     return published_;
 }
 
+std::optional<PublishedServiceMap> LiveServiceMap::WaitForPublishedAfter(
+    const std::optional<std::uint64_t> rendered_version,
+    const std::chrono::milliseconds timeout,
+    const std::stop_token stop_token) const
+{
+    std::unique_lock lock{published_mutex_};
+    const auto ready = published_cv_.wait_for(
+        lock, stop_token, timeout, [&] {
+            return publisher_stopped_
+                || (published_ && (!rendered_version
+                    || published_->rendered_version > *rendered_version));
+        });
+    if (!ready || publisher_stopped_) {
+        return std::nullopt;
+    }
+    return published_;
+}
+
+bool LiveServiceMap::publisher_stopped() const
+{
+    std::scoped_lock lock{published_mutex_};
+    return publisher_stopped_;
+}
+
 void LiveServiceMap::GraphWorker()
 {
     std::uint64_t completed_resync = 0;
@@ -171,9 +202,16 @@ void LiveServiceMap::GraphWorker()
             if (should_resync) {
                 const auto traces = active_traces_.Snapshot();
                 graph_.ReplaceAll(traces);
+                // The authoritative snapshot and complete replacement make any
+                // partial dirty-set state claimed with this request obsolete.
+                // Only now is this resynchronization considered complete.
                 completed_resync = resync_target;
                 failed_resync = 0;
             } else if (!dirty_ids.empty()) {
+                if (before_trace_snapshot_hook_) {
+                    before_trace_snapshot_hook_(
+                        before_trace_snapshot_context_);
+                }
                 const auto traces = active_traces_.SnapshotTraces(dirty_ids);
                 graph_.UpdateTraces(traces);
             }

@@ -6,6 +6,7 @@
 #include "silhouette/trace_update_sink.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -59,6 +60,14 @@ public:
         std::optional<std::uint64_t> rendered_version,
         std::stop_token stop_token = {}) const;
 
+    // Returns nullopt on timeout, cancellation, or publisher shutdown. Callers
+    // that need to distinguish shutdown may query publisher_stopped().
+    [[nodiscard]] std::optional<PublishedServiceMap> WaitForPublishedAfter(
+        std::optional<std::uint64_t> rendered_version,
+        std::chrono::milliseconds timeout,
+        std::stop_token stop_token = {}) const;
+    [[nodiscard]] bool publisher_stopped() const;
+
 private:
     using TestHook = void (*)(void*);
 
@@ -100,8 +109,12 @@ private:
     std::thread render_thread_;
     bool started_{false};
     bool closed_{false};
-    TestHook before_dirty_merge_hook_{nullptr};
-    void* before_dirty_merge_context_{nullptr};
+    TestHook before_dirty_insert_hook_{nullptr};
+    void* before_dirty_insert_context_{nullptr};
+    TestHook after_dirty_insert_hook_{nullptr};
+    void* after_dirty_insert_context_{nullptr};
+    TestHook before_trace_snapshot_hook_{nullptr};
+    void* before_trace_snapshot_context_{nullptr};
 };
 
 } // namespace silhouette

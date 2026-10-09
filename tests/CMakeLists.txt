@@ -175,10 +175,19 @@ add_live_service_map_test(
     initial_empty_map_is_published_and_restart_is_rejected
 )
 add_live_service_map_test(dirty_trace_updates_publish_latest_topology)
+add_live_service_map_test(
+    dirty_trace_reconstructs_newest_authoritative_state
+)
 add_live_service_map_test(stale_render_is_discarded_in_favor_of_newest_version)
 add_live_service_map_test(render_failure_preserves_last_published_svg)
-add_live_service_map_test(dirty_merge_failure_falls_back_to_full_resync)
+add_live_service_map_test(
+    partial_dirty_merge_failure_falls_back_to_full_resync
+)
+add_live_service_map_test(
+    first_dirty_insertion_failure_falls_back_to_full_resync
+)
 add_live_service_map_test(shutdown_drains_final_dirty_topology_and_render)
+add_live_service_map_test(shutdown_drains_pending_coalesced_work)
 
 add_executable(local_map_server_test local_map_server_test.cpp)
 target_compile_features(local_map_server_test PRIVATE cxx_std_20)
@@ -199,6 +208,9 @@ endfunction()
 add_local_map_server_test(serves_viewer_and_latest_owned_svg)
 add_local_map_server_test(
     sse_publishes_rendered_version_and_server_shutdown_wakes_waiter
+)
+add_local_map_server_test(
+    sse_heartbeat_wakes_idle_stream_and_detects_disconnect
 )
 
 add_executable(otlp_span_converter_test otlp_span_converter_test.cpp)

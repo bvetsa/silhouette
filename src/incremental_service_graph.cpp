@@ -70,7 +70,9 @@ void IncrementalServiceGraph::UpdateTraces(
 
     std::scoped_lock lock{mutex_};
 
-    // Prepare every allocation before changing any visible reference count.
+    // Prepare every allocation before changing any observable reference count.
+    // A failed allocation may leave empty contributions or zero-count entries,
+    // but Snapshot() deliberately excludes that bookkeeping state.
     for (const auto& [trace_id, contribution] : prepared) {
         state_.contributions.try_emplace(trace_id);
         for (const auto& service : contribution.services) {

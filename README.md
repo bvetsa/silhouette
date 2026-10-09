@@ -50,6 +50,10 @@ coalesce obsolete visual frames while preserving every topology update. Stop
 collection cleanly with Ctrl-C to drain pending work and write the final V1
 diagnostics and artifacts. See `STATUS.md` for current limitations.
 
+The incremental work is trace reconstruction and topology maintenance, not
+Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current
+graph; only obsolete pending render requests are coalesced.
+
 ## Build, test, and run
 
 Silhouette requires a C++20 compiler, CMake 3.24 or newer, and

@@ -172,13 +172,19 @@ Dirty IDs are invalidations, not immutable export snapshots. If several exports
 modify one trace before the graph worker runs, it reconstructs that trace from
 the newest retained evidence. Normal updates never rebuild unrelated traces.
 A full `ReplaceAll()` exists only as recovery if dirty-notification publication
-fails.
+fails. Once dirty-set insertion fails, the accumulated dirty IDs are advisory
+until a successful full snapshot and `ReplaceAll()` resynchronize the graph.
+Incremental-update preparation failures preserve the observable graph snapshot;
+invisible empty or zero-count bookkeeping entries are not part of that contract.
 
 Topology and rendering have separate monotonic versions. A render is published
 only if its topology version is still current; obsolete intermediate SVG frames
 may be discarded, but topology updates are not. Live Graphviz work uses private
 temporary files and owned SVG bytes. The loopback HTTP/SSE presentation adapter
 is intentionally thin and remains outside ingestion and the core graph model.
+Incremental reconstruction and topology maintenance do not imply incremental
+layout: each render still asks Graphviz to lay out the whole current graph, while
+obsolete pending render requests may be coalesced.
 
 V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
 persistence, authentication, a frontend framework, or incremental Graphviz

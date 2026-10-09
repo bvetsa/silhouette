@@ -7,6 +7,10 @@
 
 namespace silhouette {
 
+namespace testing {
+class LocalMapServerTestPeer;
+}
+
 class LocalMapServer final {
 public:
     // live_map must outlive this server.
@@ -26,6 +30,10 @@ public:
     [[nodiscard]] int selected_port() const noexcept;
 
 private:
+    friend class testing::LocalMapServerTestPeer;
+
+    void UseSingleWorkerForTesting();
+
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
