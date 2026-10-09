@@ -26,6 +26,7 @@ class LiveServiceMapTestPeer;
 }
 
 struct PublishedServiceMap final {
+    // Version of the observable topology state used for this successful SVG.
     std::uint64_t rendered_version;
     bool has_telemetry;
     std::string svg;
@@ -52,6 +53,7 @@ public:
     void CloseAndDrain() noexcept;
 
     [[nodiscard]] ServiceGraph SnapshotGraph() const;
+    // Advances only when the deterministic graph or has_telemetry changes.
     [[nodiscard]] std::uint64_t topology_version() const;
     [[nodiscard]] std::optional<PublishedServiceMap> SnapshotPublished() const;
 
@@ -115,6 +117,8 @@ private:
     void* after_dirty_insert_context_{nullptr};
     TestHook before_trace_snapshot_hook_{nullptr};
     void* before_trace_snapshot_context_{nullptr};
+    TestHook after_topology_update_hook_{nullptr};
+    void* after_topology_update_context_{nullptr};
 };
 
 } // namespace silhouette

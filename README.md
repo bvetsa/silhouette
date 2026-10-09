@@ -6,15 +6,15 @@ Silhouette is a local, vendor-neutral distributed-tracing and architecture-analy
 
 Silhouette currently:
 
-- receive real OTLP trace exports from a separate instrumented application;
-- convert OpenTelemetry protocol data into a small, transport-independent C++ span model;
-- group spans by trace and reconstruct parent-child structure regardless of arrival order;
-- derive directed service relationships without treating every same-service child span as a new service edge;
-- maintain continuously inspectable active-trace state while ingestion runs;
-- update the observed service topology incrementally when accepted telemetry changes;
-- expose an event-driven live SVG map at `http://127.0.0.1:8008`;
-- produce readable trace diagnostics, deterministic DOT output, and a static service map at shutdown;
-- preserve useful partial topology while marking missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity.
+- receives real OTLP trace exports from a separate instrumented application;
+- converts OpenTelemetry protocol data into a small, transport-independent C++ span model;
+- groups spans by trace and reconstructs parent-child structure regardless of arrival order;
+- derives directed service relationships without treating every same-service child span as a new service edge;
+- maintains continuously inspectable active-trace state while ingestion runs;
+- updates the observed service topology incrementally when accepted telemetry changes;
+- exposes an event-driven live SVG map at `http://127.0.0.1:8008`;
+- produces readable trace diagnostics, deterministic DOT output, and a static service map at shutdown;
+- preserves useful partial topology while marking missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity.
 
 The product reconstructs only what the received telemetry supports. It does not invent missing relationships or claim that an observed map is a complete description of the deployed system.
 
@@ -50,6 +50,11 @@ coalesce obsolete visual frames while preserving every topology update. Stop
 collection cleanly with Ctrl-C to drain pending work and write the final V1
 diagnostics and artifacts. See `STATUS.md` for current limitations.
 
+Equivalent topology evidence still updates retained traces and contribution
+counts. A new topology version and render are requested only when the graph or
+the viewer's telemetry-presence state changes. A published rendered version
+identifies the topology version used for its SVG.
+
 The incremental work is trace reconstruction and topology maintenance, not
 Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current
 graph; only obsolete pending render requests are coalesced.
@@ -57,8 +62,9 @@ graph; only obsolete pending render requests are coalesced.
 ## Build, test, and run
 
 Silhouette requires a C++20 compiler, CMake 3.24 or newer, and
-[vcpkg](https://github.com/microsoft/vcpkg). The manifest pins the gRPC and
-protobuf and cpp-httplib dependency versions. CMake downloads the pinned OpenTelemetry protocol
+[vcpkg](https://github.com/microsoft/vcpkg). The manifest's pinned vcpkg baseline
+selects the versions of `grpc`, `protobuf`, and `cpp-httplib` (`grpc` includes
+its `codegen` feature). CMake downloads the pinned OpenTelemetry protocol
 definitions and generates their C++ bindings under `build/`.
 
 Install [Graphviz](https://graphviz.org/) so `dot` is available on `PATH` for
@@ -81,8 +87,10 @@ ctest --test-dir build --output-on-failure
 ```
 
 The `silhouette` executable listens for OTLP/gRPC trace exports on
-`127.0.0.1:4317` and serves its live map on `http://127.0.0.1:8008`. The local
-page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
+`127.0.0.1:4317` and serves its live map on `http://127.0.0.1:8008`. Map-server
+startup failures, including an occupied port, are diagnosed while OTLP
+ingestion continues. The viewer URL is printed only after successful startup.
+The local page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
 over server-sent events and fetches completed in-memory SVG; there is no
 frontend build or browser polling loop. Stop Silhouette with Ctrl-C; it waits
 for in-flight requests, drains topology and rendering work, and then

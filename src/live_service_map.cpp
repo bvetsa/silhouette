@@ -218,6 +218,9 @@ void LiveServiceMap::GraphWorker()
 
             PublishTopology(
                 graph_.Snapshot(), active_traces_.active_trace_count() > 0);
+            if (after_topology_update_hook_) {
+                after_topology_update_hook_(after_topology_update_context_);
+            }
         } catch (const std::exception& error) {
             if (should_resync) {
                 failed_resync = resync_target;
@@ -314,6 +317,12 @@ void LiveServiceMap::PublishTopology(
 {
     {
         std::scoped_lock lock{topology_mutex_};
+        // Contributions/refcounts are already updated. Versions describe the
+        // viewer state, so equivalent evidence needs no new render request.
+        if (latest_topology_ == graph
+            && topology_has_telemetry_ == has_telemetry) {
+            return;
+        }
         latest_topology_ = std::move(graph);
         ++topology_version_;
         topology_has_telemetry_ = has_telemetry;

@@ -162,7 +162,9 @@ accepted OTLP export
   -> sorted unique dirty trace IDs
   -> targeted latest-state reconstruction
   -> per-trace contribution replacement
-  -> reference-counted aggregate topology version
+  -> reference-counted aggregate topology
+  -> observable state comparison (graph plus telemetry presence)
+  -> changed topology version only
   -> coalescing Graphviz render
   -> rendered-version SSE event
   -> browser map update
@@ -177,7 +179,11 @@ until a successful full snapshot and `ReplaceAll()` resynchronize the graph.
 Incremental-update preparation failures preserve the observable graph snapshot;
 invisible empty or zero-count bookkeeping entries are not part of that contract.
 
-Topology and rendering have separate monotonic versions. A render is published
+`topology_version` advances only when the deterministic `ServiceGraph` or the
+viewer-relevant `has_telemetry` state changes. Equivalent evidence still updates
+contributions and reference counts, but causes no version advance or render.
+`rendered_version` identifies the topology version of a successfully published
+SVG. Topology and rendering have separate monotonic versions. A render is published
 only if its topology version is still current; obsolete intermediate SVG frames
 may be discarded, but topology updates are not. Live Graphviz work uses private
 temporary files and owned SVG bytes. The loopback HTTP/SSE presentation adapter
@@ -185,6 +191,11 @@ is intentionally thin and remains outside ingestion and the core graph model.
 Incremental reconstruction and topology maintenance do not imply incremental
 layout: each render still asks Graphviz to lay out the whole current graph, while
 obsolete pending render requests may be coalesced.
+
+HTTP/SSE presentation failures must not disable OTLP ingestion. Map-server
+startup failures, including an occupied loopback port 8008, are diagnosed
+locally while the receiver continues starting. The viewer URL is printed only
+when the map server starts successfully.
 
 V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
 persistence, authentication, a frontend framework, or incremental Graphviz

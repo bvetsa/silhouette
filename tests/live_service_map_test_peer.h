@@ -2,11 +2,26 @@
 
 #include "silhouette/live_service_map.h"
 
+#include <utility>
+
 namespace silhouette::testing {
 
 class LiveServiceMapTestPeer final {
 public:
     using TestHook = void (*)(void*);
+
+    static void SetAfterTopologyUpdateHook(
+        LiveServiceMap& live_map, TestHook hook, void* context)
+    {
+        live_map.after_topology_update_hook_ = hook;
+        live_map.after_topology_update_context_ = context;
+    }
+
+    static void PublishTopology(
+        LiveServiceMap& live_map, ServiceGraph graph, bool has_telemetry)
+    {
+        live_map.PublishTopology(std::move(graph), has_telemetry);
+    }
 
     static void SetBeforeDirtyInsertHook(
         LiveServiceMap& live_map, TestHook hook, void* context)

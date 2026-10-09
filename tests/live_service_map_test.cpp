@@ -472,12 +472,135 @@ void ShutdownDrainsPendingCoalescedWork()
             "shutdown final topology differed from authoritative trace state");
 }
 
+struct TopologyUpdateSync final {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::size_t completed{0};
+
+    static void Signal(void* context)
+    {
+        auto& sync = *static_cast<TopologyUpdateSync*>(context);
+        {
+            std::scoped_lock lock{sync.mutex};
+            ++sync.completed;
+        }
+        sync.cv.notify_one();
+    }
+
+    void WaitFor(const std::size_t count)
+    {
+        std::unique_lock lock{mutex};
+        cv.wait(lock, [&] { return completed >= count; });
+    }
+};
+
+void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
+{
+    ActiveTraceManager active_traces;
+    RecordingRenderer renderer;
+    std::ostringstream diagnostics;
+    TopologyUpdateSync sync;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(
+        live_map, TopologyUpdateSync::Signal, &sync);
+    live_map.Start();
+    const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
+    Require(initial.has_value(), "initial map was not published");
+
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
+    }));
+    sync.WaitFor(1);
+    const auto first = live_map.WaitForPublishedAfter(0);
+    Require(first && first->rendered_version == 1,
+            "first telemetry did not publish version one");
+
+    // A second contributor to the same edge must be retained without rendering.
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
+    }));
+    sync.WaitFor(2);
+    Require(live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "equivalent trace advanced the version or rendered again");
+
+    // Same-service evidence updates the trace but leaves topology unchanged.
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 3, "checkout", 2),
+    }));
+    sync.WaitFor(3);
+    Require(live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "same-service evidence advanced the version or rendered again");
+    const auto retained = active_traces.Snapshot();
+    Require(retained.size() == 2
+                && retained[0].spans.size() + retained[1].spans.size() == 5,
+            "suppression dropped accepted evidence");
+    Require(live_map.SnapshotGraph() == silhouette::BuildServiceGraph(retained),
+            "suppressed topology differed from authoritative evidence");
+
+    // Ambiguity removes trace one's edge contribution; trace two still owns it.
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"),
+    }));
+    sync.WaitFor(4);
+    const auto revised = live_map.WaitForPublishedAfter(1);
+    Require(revised && revised->rendered_version == 2,
+            "new gap after suppression did not render version two");
+    Require(live_map.SnapshotGraph().edges
+                == std::vector<silhouette::ServiceEdge>{{"frontend", "checkout"}},
+            "suppressed contributor did not preserve its edge reference");
+
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(2, 1, "frontend"),
+    }));
+    sync.WaitFor(5);
+    const auto final = live_map.WaitForPublishedAfter(2);
+    Require(final && final->rendered_version == 3,
+            "last edge removal did not render version three");
+    live_map.CloseAndDrain();
+    Require(live_map.SnapshotGraph().edges.empty()
+                && live_map.SnapshotGraph()
+                    == silhouette::BuildServiceGraph(active_traces.Snapshot()),
+            "final incremental graph retained stale contribution counts");
+    Require(renderer.RenderedGraphs().size() == 4,
+            "suppressed updates caused extra renders");
+}
+
+void TelemetryFlagChangesEmptyPresentationState()
+{
+    ActiveTraceManager active_traces;
+    RecordingRenderer renderer;
+    std::ostringstream diagnostics;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    live_map.Start();
+    const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
+    Require(initial && !initial->has_telemetry,
+            "initial map incorrectly claimed telemetry");
+
+    // Exercise the presentation boundary directly: a retained real span normally
+    // contributes either a service or a gap, even without service identity.
+    LiveServiceMapTestPeer::PublishTopology(live_map, {}, true);
+    const auto updated = live_map.WaitForPublishedAfter(0);
+    Require(updated && updated->rendered_version == 1 && updated->has_telemetry,
+            "telemetry flag transition with empty graph was suppressed");
+    LiveServiceMapTestPeer::PublishTopology(live_map, {}, true);
+    live_map.CloseAndDrain();
+    Require(live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "unchanged telemetry flag and empty graph rendered again");
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"equivalent_evidence_suppresses_renders_and_preserves_contributions",
+             EquivalentEvidenceSuppressesRendersAndPreservesContributions},
+    TestCase{"telemetry_flag_changes_empty_presentation_state",
+             TelemetryFlagChangesEmptyPresentationState},
     TestCase{"initial_empty_map_is_published_and_restart_is_rejected",
              InitialEmptyMapIsPublishedAndRestartIsRejected},
     TestCase{"dirty_trace_updates_publish_latest_topology",

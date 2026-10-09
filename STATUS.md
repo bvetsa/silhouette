@@ -10,7 +10,9 @@ Each accepted non-empty export publishes its complete batch, advances counters,
 and then emits sorted unique dirty trace IDs under a narrow publication mutex.
 The graph worker reconstructs only those traces from their latest authoritative
 state, atomically replaces their reference-counted topology contributions, and
-publishes a new topology version. A separate Graphviz worker coalesces obsolete
+publishes a new topology version only when the deterministic graph or telemetry
+presence changes. Equivalent updates retain all evidence and contribution
+counts without requesting another render. A separate Graphviz worker coalesces obsolete
 frames and publishes only a current rendered version; each render still lays out
 the whole current graph. A thin loopback HTTP/SSE
 adapter serves the live map at `http://127.0.0.1:8008` while ingestion continues.
@@ -22,10 +24,14 @@ existing deterministic trace, service graph, DOT, and SVG outputs.
 V2.2 event-driven live service-map work is implemented on
 `v2-live-service-graph`, based on merged `main` at `95c7914`. Focused manager,
 incremental-graph, rendering, failure-recovery, HTTP, SSE, and shutdown tests are
-in place. A warnings-enabled build and all 82 CTest cases pass, including the localhost
-gRPC/HTTP integrations. The concurrency-sensitive cases also pass 100 repeated
-runs. A process-level smoke test confirmed the page, initial SVG, live rendered
-version event, updated service labels, graceful shutdown, and final DOT/SVG.
+in place. A fresh Debug configure/build (reusing installed vcpkg dependencies
+and the cached pinned protocol source) and all 84 CTest cases pass, including
+localhost gRPC/HTTP integrations. All 16 focused live-map/incremental-graph and
+13 rendering cases pass; nine concurrency-sensitive live-map cases pass 100
+repeated runs each. Browser and process smoke tests confirmed versions
+`0 -> 1 -> 1 -> 2` and actual Graphviz invocation counts `1 -> 2 -> 2 -> 3`
+for initial, first, equivalent, and changed topology. An occupied map port still
+permits real OTLP ingestion, graceful shutdown, and final DOT/SVG output.
 
 ## Next concrete step
 
@@ -46,7 +52,7 @@ live-map implementation.
 - Incremental topology: store one `ServiceGraph` contribution per trace and maintain deterministic service, edge, and gap reference counts; `ReplaceAll()` is failure recovery only.
 - Incremental-update exception safety: preparation failure preserves the observable graph returned by snapshots; invisible empty or zero-count bookkeeping entries may remain.
 - Update publication: serialize only manager publication, accepted counters, and dirty notification; never hold that mutex during reconstruction, graph work, Graphviz, HTTP, or SSE.
-- Live-map versions: topology and rendered versions are distinct and monotonic; discard a completed SVG if its topology version is stale.
+- Live-map versions: topology versions count changes to the deterministic graph plus telemetry presence; rendered versions identify the topology used for a successfully published SVG. Suppress equivalent presentation updates and discard stale completed SVGs.
 - Presentation backpressure: every topology update is applied, while the Graphviz worker may coalesce obsolete intermediate visual frames; every render that does run performs a whole-current-graph layout.
 - Live rendering: use private temporary DOT/SVG files and publish owned SVG bytes without mutating final `silhouette.dot` or `silhouette.svg` artifacts.
 - Local presentation: serve embedded HTML/CSS/JavaScript, SVG, and server-sent events on `127.0.0.1:8008` through cpp-httplib; idle SSE streams use comment heartbeats to detect disconnected clients without browser polling.
@@ -109,10 +115,21 @@ frame still requires a full Graphviz layout, although obsolete pending frames
 are coalesced. The live server is fixed to loopback port 8008 and has no stable
 configuration interface. SVG generation requires external Graphviz on `PATH`;
 fixed artifact paths, live messages, HTTP routes, and styling are not stable
-public contracts.
+public contracts. A failed live render retains the last valid SVG; equivalent
+telemetry does not retry rendering, so recovery requires a later observable
+state change or process restart.
 
 ## Latest work
 
+- Added value equality for `ServiceGraph` and suppressed topology version and
+  render requests when both the deterministic graph and telemetry presence are
+  unchanged, after normal contribution/refcount maintenance.
+- Added deterministic coverage for equivalent trace contributions, same-service
+  evidence, telemetry-presence changes with an empty graph, later gap/edge
+  changes, retained spans, and authoritative-builder equivalence.
+- Corrected README capability grammar and described the pinned vcpkg baseline
+  for `grpc`, `protobuf`, and presentation-only `cpp-httplib`; aligned version
+  and map-server failure semantics across README, PROJECT, and STATUS.
 - Isolated live HTTP startup errors so an occupied map port reports a diagnostic
   and OTLP collection continues; the viewer URL is printed only after successful
   startup. Verified the actual executable with port 8008 occupied and available:
@@ -137,7 +154,7 @@ public contracts.
 - Fixed recovery notification publication under the dirty mutex, covered failed
   first insertion as well as partial insertion, and synchronized the render
   failure diagnostic assertion by joining the workers before reading the stream.
-- Verified a warnings-enabled build and all 82 CTest cases, plus 100
+- Verified a warnings-enabled build and all 84 CTest cases, plus 100
   repeated runs of the concurrency, stale-render, resync, and drain cases.
 - Verified the actual executable with a two-span `frontend -> checkout` OTLP
   export: the page and empty SVG were immediately available, SSE published

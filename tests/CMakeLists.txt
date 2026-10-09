@@ -176,6 +176,10 @@ add_live_service_map_test(
 )
 add_live_service_map_test(dirty_trace_updates_publish_latest_topology)
 add_live_service_map_test(
+    equivalent_evidence_suppresses_renders_and_preserves_contributions
+)
+add_live_service_map_test(telemetry_flag_changes_empty_presentation_state)
+add_live_service_map_test(
     dirty_trace_reconstructs_newest_authoritative_state
 )
 add_live_service_map_test(stale_render_is_discarded_in_favor_of_newest_version)
