@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <new>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -19,11 +20,15 @@ namespace otlp = opentelemetry::proto::collector::trace::v1;
 class OtlpGrpcReceiver::TraceService final : public otlp::TraceService::Service {
 public:
     TraceService(ActiveTraceManager& active_traces,
+                 TraceUpdateSink* update_sink,
                  std::atomic<std::uint64_t>& accepted_request_count,
-                 std::atomic<std::uint64_t>& accepted_span_count)
+                 std::atomic<std::uint64_t>& accepted_span_count,
+                 std::mutex& publication_mutex)
         : active_traces_{active_traces}
+        , update_sink_{update_sink}
         , accepted_request_count_{accepted_request_count}
         , accepted_span_count_{accepted_span_count}
+        , publication_mutex_{publication_mutex}
     {
     }
 
@@ -46,10 +51,18 @@ public:
                     "or parent span ID.");
             }
 
-            active_traces_.AppendBatch(std::move(conversion.spans));
-            accepted_span_count_.fetch_add(
-                accepted_span_count, std::memory_order_relaxed);
-            accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
+            {
+                std::scoped_lock publication_lock{publication_mutex_};
+                auto affected_trace_ids =
+                    active_traces_.AppendBatch(std::move(conversion.spans));
+                accepted_span_count_.fetch_add(
+                    accepted_span_count, std::memory_order_relaxed);
+                accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
+                if (update_sink_ != nullptr && !affected_trace_ids.empty()) {
+                    update_sink_->NotifyTracesDirty(
+                        std::move(affected_trace_ids));
+                }
+            }
 
             return grpc::Status::OK;
         } catch (const std::bad_alloc&) {
@@ -63,14 +76,19 @@ public:
 
 private:
     ActiveTraceManager& active_traces_;
+    TraceUpdateSink* update_sink_;
     std::atomic<std::uint64_t>& accepted_request_count_;
     std::atomic<std::uint64_t>& accepted_span_count_;
+    std::mutex& publication_mutex_;
 };
 
 OtlpGrpcReceiver::OtlpGrpcReceiver(
-    std::string listen_address, ActiveTraceManager& active_traces)
+    std::string listen_address,
+    ActiveTraceManager& active_traces,
+    TraceUpdateSink* update_sink)
     : listen_address_{std::move(listen_address)}
     , active_traces_{active_traces}
+    , update_sink_{update_sink}
 {
     if (listen_address_.empty()) {
         throw std::invalid_argument{"OTLP/gRPC listen address cannot be empty"};
@@ -89,7 +107,8 @@ void OtlpGrpcReceiver::Start()
     }
 
     auto service = std::make_unique<TraceService>(
-        active_traces_, accepted_request_count_, accepted_span_count_);
+        active_traces_, update_sink_, accepted_request_count_,
+        accepted_span_count_, publication_mutex_);
 
     grpc::ServerBuilder builder;
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);

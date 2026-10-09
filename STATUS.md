@@ -1,33 +1,36 @@
 # Project Status
 
-Last updated: 2026-10-03
+Last updated: 2026-10-09
 
 ## Current status
 
-Silhouette has a working OTLP/gRPC trace receiver that converts valid protocol
-spans into a protobuf-independent C++ domain model and publishes complete
-accepted export batches into an application-owned, thread-safe
-`ActiveTraceManager`. The receiver publishes each batch before incrementing its
-accepted-span counter. Fully owned reconstructed snapshots can be inspected
-while ingestion continues, and reconstruction occurs after the manager lock is
-released. Spans with malformed trace, span, or non-empty parent IDs are rejected
-individually through OTLP partial success while valid siblings remain accepted.
-The executable reports concise live active-trace and accepted-span counts. After
-shutdown, the latest snapshot is printed as deterministic trace trees and
-aggregated into the existing deterministic service graph, DOT, and SVG outputs.
+Silhouette continuously retains accepted OTLP spans in an application-owned
+`ActiveTraceManager` and incrementally maintains the observed service topology.
+Each accepted non-empty export publishes its complete batch, advances counters,
+and then emits sorted unique dirty trace IDs under a narrow publication mutex.
+The graph worker reconstructs only those traces from their latest authoritative
+state, atomically replaces their reference-counted topology contributions, and
+publishes a new topology version. A separate Graphviz worker coalesces obsolete
+frames and publishes only a current rendered version. A thin loopback HTTP/SSE
+adapter serves the live map at `http://127.0.0.1:8008` while ingestion continues.
+Ctrl-C still drains in-flight ingestion and live-map work before producing the
+existing deterministic trace, service graph, DOT, and SVG outputs.
 
 ## Current task
 
-V2.1 continuous active-trace state is implemented on
-`v2-active-trace-state`, based on merged `main`. The active manager, receiver
-integration, concise live reporting, final V1 output path, and focused
-concurrency coverage are complete. A fresh build and all 60 CTest cases pass.
+V2.2 event-driven live service-map work is implemented on
+`v2-live-service-graph`, based on merged `main` at `95c7914`. Focused manager,
+incremental-graph, rendering, failure-recovery, HTTP, SSE, and shutdown tests are
+in place. A fresh build and all 78 CTest cases pass, including the localhost
+gRPC/HTTP integrations. The concurrency-sensitive cases also pass 100 repeated
+runs. A process-level smoke test confirmed the page, initial SVG, live rendered
+version event, updated service labels, graceful shutdown, and final DOT/SVG.
 
 ## Next concrete step
 
-Review and merge V2.1, then implement trace quiescence and finalization as the
-next lifecycle slice. Do not add eviction, incremental topology, persistence,
-web UI, or request playback to V2.1.
+Review and merge V2.2. Select the next V2 slice explicitly; trace
+quiescence/finalization and bounded retention remain separate from this
+live-map implementation.
 
 ## Accepted decisions
 
@@ -38,6 +41,15 @@ web UI, or request playback to V2.1.
 - Integration target: a completely separate existing instrumented application, used for manual testing only.
 - V1 lifecycle: finite in-memory capture stopped with Ctrl-C, followed by batch processing.
 - V2.1 lifecycle: continuously inspectable active traces with no finalization or eviction yet.
+- V2.2 update semantics: dirty trace IDs are latest-state invalidations, not immutable export snapshots; normal topology work reconstructs only affected traces.
+- Incremental topology: store one `ServiceGraph` contribution per trace and maintain deterministic service, edge, and gap reference counts; `ReplaceAll()` is failure recovery only.
+- Update publication: serialize only manager publication, accepted counters, and dirty notification; never hold that mutex during reconstruction, graph work, Graphviz, HTTP, or SSE.
+- Live-map versions: topology and rendered versions are distinct and monotonic; discard a completed SVG if its topology version is stale.
+- Presentation backpressure: every topology update is applied, while the Graphviz worker may coalesce obsolete intermediate visual frames.
+- Live rendering: use private temporary DOT/SVG files and publish owned SVG bytes without mutating final `silhouette.dot` or `silhouette.svg` artifacts.
+- Local presentation: serve embedded HTML/CSS/JavaScript, SVG, and server-sent events on `127.0.0.1:8008` through cpp-httplib; do not add a frontend build stack or browser polling.
+- Failure isolation: dirty-notification failure requests a conservative full resync; graph, renderer, HTTP, and SSE failures must not reject accepted telemetry or terminate ingestion.
+- Shutdown order: stop and join OTLP, close and drain invalidations, render the newest topology, stop HTTP/SSE, then run the final V1 artifact path.
 - V1 output: textual trace diagnostics plus a simple DOT/static visual service map.
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
@@ -49,6 +61,7 @@ web UI, or request playback to V2.1.
 - Initial trace transport: synchronous unary OTLP/gRPC on loopback port 4317 using insecure local credentials.
 - Receiver lifecycle: `Start()` binds and returns; `Shutdown()` acts only after a successful start, requests gRPC shutdown, and waits for in-flight work.
 - Dependency management: vcpkg manifest mode with pinned gRPC and protobuf versions.
+- HTTP dependency: cpp-httplib is a presentation-only vcpkg dependency and does not enter the core or ingestion domain model.
 - Protocol definitions: official `opentelemetry-proto` v1.11.0, fetched by CMake with a pinned archive checksum; generated sources remain under `build/`.
 - Receiver boundary: protocol-specific types may exist inside ingestion code and tests, but must not leak into the future core engine or domain model.
 - Domain IDs: `TraceId` and `SpanId` are non-default-constructible fixed-size binary values; incorrect lengths and all-zero values are invalid, while individual zero bytes are valid.
@@ -80,19 +93,45 @@ These should be decided only when authorized work requires them:
 - whether a dedicated unit-test framework becomes useful as behavior grows;
 - stable CLI flags, defaults, and output locations;
 - whether and when to add OTLP/HTTP after the gRPC path;
-- future presentation design beyond the initial static map;
+- stable configuration for the OTLP and live-map listen addresses and ports;
 
 An open decision is not permission for an agent to choose silently. Present options and tradeoffs when the decision becomes blocking, make the smallest reversible choice when authorized, and record the result here.
 
 ## Known issues
 
-No known conversion, receiver, trace-reconstruction, or service-aggregation
-issues. V2.1 intentionally retains every observed trace for the process lifetime;
-quiescence, finalization, and bounded eviction are not implemented yet. SVG
-generation requires external Graphviz on `PATH`; fixed artifact paths, live
-messages, and current styling do not establish stable CLI/design contracts.
+No known conversion, receiver, trace-reconstruction, service-aggregation, or
+incremental-topology correctness issues. V2.2 intentionally retains every
+observed trace and contribution for the process lifetime; quiescence,
+finalization, and bounded eviction are not implemented. Each published live
+frame still requires a full Graphviz layout, although obsolete pending frames
+are coalesced. The live server is fixed to loopback port 8008 and has no stable
+configuration interface. SVG generation requires external Graphviz on `PATH`;
+fixed artifact paths, live messages, HTTP routes, and styling are not stable
+public contracts.
 
 ## Latest work
+
+- Added sorted unique dirty-trace publication from the active manager and
+  targeted owned `SnapshotTraces()` reconstruction outside its mutex.
+- Added per-trace topology contribution replacement with service, edge, and gap
+  reference counts, deterministic snapshots, and an atomic full-resync path.
+- Added separate graph and render workers, monotonic topology/rendered versions,
+  stale-frame discard, event coalescing, diagnostic failure isolation, and
+  deterministic shutdown draining.
+- Added an owned live Graphviz renderer that uses private temporary files and
+  leaves final V1 artifact paths untouched.
+- Added a thin cpp-httplib loopback server with an embedded viewer, `/graph.svg`,
+  and stop-aware `/events` server-sent events.
+- Added deterministic coverage for targeted snapshots, contribution replacement
+  and shared references, direct-builder equivalence, atomic concurrent reads,
+  notification ordering, full-resync recovery, stale and failed renders, final
+  drain behavior, live rendering, HTTP routes, SSE events, and SSE shutdown.
+- Verified a fresh warnings-enabled build and all 78 CTest cases, plus 100
+  repeated runs of the concurrency, stale-render, resync, and drain cases.
+- Verified the actual executable with a two-span `frontend -> checkout` OTLP
+  export: the page and empty SVG were immediately available, SSE published
+  rendered version 1, the live SVG showed both services, and Ctrl-C produced the
+  expected final trace, edge, DOT, and SVG.
 
 - Replaced `SpanCapture` with an application-owned `ActiveTraceManager` that
   retains active evidence in append-only per-trace batches without recopying
@@ -162,6 +201,7 @@ messages, and current styling do not establish stable CLI/design contracts.
 
 ## Deferred work
 
-Trace quiescence/finalization, bounded retention, incremental topology, web
-rendering, and request playback remain deferred beyond V2.1. Candidate later
+Trace quiescence/finalization, bounded retention and eviction, persistence,
+request playback, incremental Graphviz layout, configurable networking, and a
+larger browser interface remain deferred beyond V2.2. Candidate later
 directions remain listed in `ROADMAP.md`.

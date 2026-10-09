@@ -14,11 +14,13 @@
 #include <iostream>
 #include <latch>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -42,20 +44,82 @@ std::string MakeIdBytes(const std::size_t size, const std::uint8_t marker)
     return bytes;
 }
 
+silhouette::TraceId MakeTraceId(const std::uint8_t marker)
+{
+    silhouette::TraceId::Bytes bytes{};
+    bytes.back() = static_cast<std::byte>(marker);
+    const auto trace_id = silhouette::TraceId::FromBytes(bytes);
+    Require(trace_id.has_value(), "test trace ID was invalid");
+    return *trace_id;
+}
+
 struct ReceiverFixture final {
     silhouette::ActiveTraceManager active_traces;
     Receiver receiver{kEphemeralAddress, active_traces};
 };
 
-std::size_t RetainedSpanCount(const ReceiverFixture& fixture)
+std::size_t RetainedSpanCount(
+    const silhouette::ActiveTraceManager& active_traces)
 {
-    const auto snapshot = fixture.active_traces.Snapshot();
+    const auto snapshot = active_traces.Snapshot();
     std::size_t count = 0;
     for (const auto& trace : snapshot) {
         count += trace.spans.size();
     }
     return count;
 }
+
+std::size_t RetainedSpanCount(const ReceiverFixture& fixture)
+{
+    return RetainedSpanCount(fixture.active_traces);
+}
+
+class RecordingUpdateSink final : public silhouette::TraceUpdateSink {
+public:
+    explicit RecordingUpdateSink(
+        const silhouette::ActiveTraceManager& active_traces)
+        : active_traces_{active_traces}
+    {
+    }
+
+    void SetReceiver(const Receiver& receiver) { receiver_ = &receiver; }
+
+    void NotifyTracesDirty(
+        std::vector<silhouette::TraceId> trace_ids) noexcept override
+    {
+        std::scoped_lock lock{mutex_};
+        notifications_.push_back(std::move(trace_ids));
+        retained_counts_.push_back(RetainedSpanCount(active_traces_));
+        accepted_counts_.push_back(receiver_->accepted_span_count());
+    }
+
+    [[nodiscard]] std::vector<std::vector<silhouette::TraceId>>
+    notifications() const
+    {
+        std::scoped_lock lock{mutex_};
+        return notifications_;
+    }
+
+    [[nodiscard]] std::vector<std::size_t> retained_counts() const
+    {
+        std::scoped_lock lock{mutex_};
+        return retained_counts_;
+    }
+
+    [[nodiscard]] std::vector<std::uint64_t> accepted_counts() const
+    {
+        std::scoped_lock lock{mutex_};
+        return accepted_counts_;
+    }
+
+private:
+    const silhouette::ActiveTraceManager& active_traces_;
+    const Receiver* receiver_{nullptr};
+    mutable std::mutex mutex_;
+    std::vector<std::vector<silhouette::TraceId>> notifications_;
+    std::vector<std::size_t> retained_counts_;
+    std::vector<std::uint64_t> accepted_counts_;
+};
 
 std::unique_ptr<otlp::TraceService::Stub> Connect(const Receiver& receiver)
 {
@@ -250,6 +314,43 @@ void AcceptedSpanCountNeverLeadsPublishedState()
             "published manager state did not cover the accepted-span count");
 }
 
+void NonEmptyExportsNotifyAfterPublication()
+{
+    silhouette::ActiveTraceManager active_traces;
+    RecordingUpdateSink sink{active_traces};
+    Receiver receiver{kEphemeralAddress, active_traces, &sink};
+    sink.SetReceiver(receiver);
+    receiver.Start();
+    auto stub = Connect(receiver);
+
+    ExportSuccessfully(*stub, {});
+    Require(sink.notifications().empty(),
+            "empty export emitted a dirty-trace notification");
+
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 2, 1, "trace-two");
+    AddValidSpan(request, 1, 1, "trace-one");
+    AddValidSpan(request, 2, 2, "trace-two-again");
+    ExportSuccessfully(*stub, request);
+
+    const auto notifications = sink.notifications();
+    Require(notifications.size() == 1,
+            "one accepted export did not emit exactly one notification");
+    Require(notifications.front()
+                == std::vector<silhouette::TraceId>{
+                    MakeTraceId(1),
+                    MakeTraceId(2),
+                },
+            "notification did not contain sorted unique affected trace IDs");
+
+    const auto retained_counts = sink.retained_counts();
+    const auto accepted_counts = sink.accepted_counts();
+    Require(retained_counts == std::vector<std::size_t>{3},
+            "notification ran before the complete accepted batch was retained");
+    Require(accepted_counts == std::vector<std::uint64_t>{3},
+            "notification ran before accepted counters advanced");
+}
+
 void RejectsSecondStart()
 {
     ReceiverFixture fixture;
@@ -349,6 +450,8 @@ constexpr std::array kTestCases{
              PartiallyValidExportReportsRejection},
     TestCase{"accepted_span_count_never_leads_published_state",
              AcceptedSpanCountNeverLeadsPublishedState},
+    TestCase{"non_empty_exports_notify_after_publication",
+             NonEmptyExportsNotifyAfterPublication},
     TestCase{"rejects_second_start", RejectsSecondStart},
     TestCase{"allows_shutdown_before_start", AllowsShutdownBeforeStart},
     TestCase{"allows_repeated_shutdown", AllowsRepeatedShutdown},

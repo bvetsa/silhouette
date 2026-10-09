@@ -1,9 +1,11 @@
 #include "silhouette/rendering/service_graph_dot.h"
+#include "silhouette/rendering/service_graph_renderer.h"
 #include "rendering/service_graph_artifacts.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +23,7 @@ namespace {
 using silhouette::ServiceGraph;
 using silhouette::ServiceGraphGapKind;
 using silhouette::rendering::FormatServiceGraphDot;
+using silhouette::rendering::GraphvizServiceGraphRenderer;
 using silhouette::rendering::WriteServiceGraphArtifacts;
 
 void Require(const bool condition, const std::string_view message)
@@ -310,7 +313,39 @@ void RealGraphvizProducesSvg()
             "rendered SVG omitted the embedded legend");
 }
 
+void LiveRendererReturnsOwnedSvgWithoutTouchingPublicArtifacts()
+{
+    TemporaryWorkspace workspace;
+    WriteFile("silhouette.dot", "public DOT sentinel");
+    WriteFile("silhouette.svg", "public SVG sentinel");
+
+    GraphvizServiceGraphRenderer renderer;
+    const ServiceGraph graph{
+        .services = {"frontend", "checkout"},
+        .edges = {{"frontend", "checkout"}},
+        .gaps = {},
+    };
+    const auto result = renderer.RenderSvg(graph);
+
+    Require(result.succeeded(), result.error);
+    Require(result.svg.find("<svg") != std::string::npos
+                && result.svg.find("frontend") != std::string::npos
+                && result.svg.find("checkout") != std::string::npos,
+            "live renderer did not return the complete owned SVG");
+    Require(ReadFile("silhouette.dot") == "public DOT sentinel",
+            "live renderer modified the public V1 DOT artifact");
+    Require(ReadFile("silhouette.svg") == "public SVG sentinel",
+            "live renderer modified the public V1 SVG artifact");
+}
+
 #ifndef _WIN32
+volatile std::sig_atomic_t received_graphviz_signal = 0;
+
+extern "C" void CaptureGraphvizSignal(const int signal)
+{
+    received_graphviz_signal = signal;
+}
+
 class ScopedPath final {
 public:
     explicit ScopedPath(const std::string& path)
@@ -334,6 +369,52 @@ public:
 private:
     std::optional<std::string> original_;
 };
+
+class ScopedSignalHandler final {
+public:
+    ScopedSignalHandler(const int signal, void (*handler)(int))
+        : signal_{signal}
+        , previous_{std::signal(signal, handler)}
+    {
+        Require(previous_ != SIG_ERR, "could not install test signal handler");
+    }
+
+    ~ScopedSignalHandler() { std::signal(signal_, previous_); }
+
+    ScopedSignalHandler(const ScopedSignalHandler&) = delete;
+    ScopedSignalHandler& operator=(const ScopedSignalHandler&) = delete;
+
+private:
+    int signal_;
+    void (*previous_)(int);
+};
+
+void LiveRendererPreservesSignalDeliveryWhileGraphvizRuns()
+{
+    TemporaryWorkspace workspace;
+    std::filesystem::create_directory("fake-bin");
+    WriteFile("fake-bin/dot",
+              "#!/bin/sh\n"
+              "[ \"$#\" = 4 ] && [ \"$1\" = '-Tsvg' ] "
+              "&& [ \"$3\" = '-o' ] || exit 90\n"
+              "kill -INT \"$PPID\"\n"
+              "printf '%s' '<svg>signal-safe</svg>' > \"$4\"\n");
+    std::filesystem::permissions(
+        "fake-bin/dot", std::filesystem::perms::owner_exec,
+        std::filesystem::perm_options::add);
+    ScopedPath path{std::filesystem::absolute("fake-bin").string()};
+    received_graphviz_signal = 0;
+    ScopedSignalHandler handler{SIGINT, CaptureGraphvizSignal};
+
+    GraphvizServiceGraphRenderer renderer;
+    const auto result = renderer.RenderSvg(ServiceGraph{});
+
+    Require(result.succeeded(), result.error);
+    Require(received_graphviz_signal == SIGINT,
+            "live Graphviz execution swallowed the process SIGINT");
+    Require(result.svg == "<svg>signal-safe</svg>",
+            "controlled Graphviz process returned the wrong SVG");
+}
 
 void RequireRenderingFailure(
     const silhouette::rendering::ServiceGraphArtifactResult& result)
@@ -411,11 +492,15 @@ constexpr std::array kTestCases{
     TestCase{"gap_connections_use_only_stored_endpoints", GapConnectionsUseOnlyStoredEndpoints},
     TestCase{"output_is_stable_across_capture_permutations", OutputIsStableAcrossCapturePermutations},
     TestCase{"real_graphviz_produces_svg", RealGraphvizProducesSvg},
+    TestCase{"live_renderer_returns_owned_svg_without_touching_public_artifacts",
+             LiveRendererReturnsOwnedSvgWithoutTouchingPublicArtifacts},
     TestCase{"dot_write_failure_has_file_context", DotWriteFailureHasFileContext},
 #ifndef _WIN32
     TestCase{"unavailable_graphviz_retains_dot_and_removes_stale_svg",
              UnavailableGraphvizRetainsDotAndRemovesStaleSvg},
     TestCase{"failing_graphviz_removes_partial_svg", FailingGraphvizRemovesPartialSvg},
+    TestCase{"live_renderer_preserves_signal_delivery_while_graphviz_runs",
+             LiveRendererPreservesSignalDeliveryWhileGraphvizRuns},
 #endif
 };
 

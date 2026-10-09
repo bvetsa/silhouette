@@ -4,13 +4,16 @@ Silhouette is a local, vendor-neutral distributed-tracing and architecture-analy
 
 ## Capabilities
 
-Silhouette's V1 product boundary is designed to:
+Silhouette currently:
 
 - receive real OTLP trace exports from a separate instrumented application;
 - convert OpenTelemetry protocol data into a small, transport-independent C++ span model;
 - group spans by trace and reconstruct parent-child structure regardless of arrival order;
 - derive directed service relationships without treating every same-service child span as a new service edge;
-- produce readable trace diagnostics, deterministic DOT output, and a simple static service map;
+- maintain continuously inspectable active-trace state while ingestion runs;
+- update the observed service topology incrementally when accepted telemetry changes;
+- expose an event-driven live SVG map at `http://127.0.0.1:8008`;
+- produce readable trace diagnostics, deterministic DOT output, and a static service map at shutdown;
 - preserve useful partial topology while marking missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity.
 
 The product reconstructs only what the received telemetry supports. It does not invent missing relationships or claim that an observed map is a complete description of the deployed system.
@@ -22,29 +25,36 @@ external OpenTelemetry-instrumented application
                          |
                          | OTLP traces
                          v
-                  finite capture
+             active trace state
                          |
                          v
-                internal C++ spans
+           targeted trace reconstruction
                          |
                          v
-           reconstructed request traces
+       per-trace topology contributions
                          |
                          v
-            aggregated service graph
+      reference-counted service graph
                          |
-                         +--> textual trace diagnostics
-                         +--> DOT/static service map
+                         +--> Graphviz SVG --> SSE --> browser
+                         +--> final textual diagnostics
+                         +--> final DOT/static service map
                          +--> explicit observability gaps
 ```
 
-The usage model is to start Silhouette, send it telemetry from a separate application, generate a finite amount of traffic, stop collection cleanly with Ctrl-C, and inspect the generated diagnostics and graph. Runtime transport, configuration, and output details should be taken from the implemented interface; see `STATUS.md` for what is currently available.
+Start Silhouette, open `http://127.0.0.1:8008`, and send telemetry from a
+separate application. Each accepted non-empty OTLP export invalidates its
+affected traces; a background worker reconstructs their latest authoritative
+state and replaces only their topology contributions. A separate renderer may
+coalesce obsolete visual frames while preserving every topology update. Stop
+collection cleanly with Ctrl-C to drain pending work and write the final V1
+diagnostics and artifacts. See `STATUS.md` for current limitations.
 
 ## Build, test, and run
 
 Silhouette requires a C++20 compiler, CMake 3.24 or newer, and
 [vcpkg](https://github.com/microsoft/vcpkg). The manifest pins the gRPC and
-protobuf dependency versions. CMake downloads the pinned OpenTelemetry protocol
+protobuf and cpp-httplib dependency versions. CMake downloads the pinned OpenTelemetry protocol
 definitions and generates their C++ bindings under `build/`.
 
 Install [Graphviz](https://graphviz.org/) so `dot` is available on `PATH` for
@@ -67,7 +77,11 @@ ctest --test-dir build --output-on-failure
 ```
 
 The `silhouette` executable listens for OTLP/gRPC trace exports on
-`127.0.0.1:4317`. Stop it with Ctrl-C; it waits for in-flight requests and then
+`127.0.0.1:4317` and serves its live map on `http://127.0.0.1:8008`. The local
+page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
+over server-sent events and fetches completed in-memory SVG; there is no
+frontend build or browser polling loop. Stop Silhouette with Ctrl-C; it waits
+for in-flight requests, drains topology and rendering work, and then
 prints the accepted export-request and span totals followed by deterministic
 reconstructed trace trees and a deterministic service-graph summary. Valid spans
 are converted to protobuf-independent values and retained in memory as complete
@@ -101,10 +115,11 @@ filesystem prevents removal. DOT write failures report the file context.
 `ServiceGraph` remains the architecture model. The separate
 `silhouette_rendering` target provides the pure `FormatServiceGraphDot()`
 presentation boundary without adding rendering dependencies to
-`silhouette_core`. Its private `WriteServiceGraphArtifacts()` helper is only a
-V1 local CLI convenience, not a long-term renderer interface. Future web
-renderers can consume `ServiceGraph` or DOT, and request playback can consume
-`ReconstructedTrace` without changing the aggregate graph.
+`silhouette_core`. Live rendering uses private temporary files and returns owned
+SVG bytes without touching the public `silhouette.dot` or `silhouette.svg`
+paths. The private `WriteServiceGraphArtifacts()` helper remains the final V1
+CLI artifact path. The HTTP/SSE adapter depends on the live-map and rendering
+boundaries; ingestion and core code do not depend on browser or HTTP concepts.
 
 ## Design priorities
 

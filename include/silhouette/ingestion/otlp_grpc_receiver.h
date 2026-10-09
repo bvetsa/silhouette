@@ -1,10 +1,12 @@
 #pragma once
 
 #include "silhouette/active_trace_manager.h"
+#include "silhouette/trace_update_sink.h"
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace grpc {
@@ -15,9 +17,12 @@ namespace silhouette::ingestion {
 
 class OtlpGrpcReceiver final {
 public:
-    // active_traces must outlive this receiver and receives each accepted batch.
+    // active_traces and update_sink (when supplied) must outlive this receiver.
+    // The active manager receives each accepted batch before notification.
     OtlpGrpcReceiver(
-        std::string listen_address, ActiveTraceManager& active_traces);
+        std::string listen_address,
+        ActiveTraceManager& active_traces,
+        TraceUpdateSink* update_sink = nullptr);
     ~OtlpGrpcReceiver();
 
     OtlpGrpcReceiver(const OtlpGrpcReceiver&) = delete;
@@ -46,10 +51,12 @@ private:
 
     std::string listen_address_;
     ActiveTraceManager& active_traces_;
+    TraceUpdateSink* update_sink_;
     std::unique_ptr<TraceService> service_;
     std::unique_ptr<grpc::Server> server_;
     std::atomic<std::uint64_t> accepted_request_count_{0};
     std::atomic<std::uint64_t> accepted_span_count_{0};
+    std::mutex publication_mutex_;
     int selected_port_{0};
     State state_{State::not_started};
 };

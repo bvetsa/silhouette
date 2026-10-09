@@ -29,11 +29,12 @@ Silhouette is responsible for:
 - receiving OTLP trace exports;
 - extracting span data and resource-level service identity;
 - converting protocol objects into its own internal representation;
-- retaining the finite capture in memory;
+- retaining active trace evidence in memory while ingestion continues;
 - reconstructing traces from arbitrarily ordered spans;
 - identifying incomplete or inconsistent evidence;
 - aggregating cross-service relationships;
-- generating textual and static graph output.
+- incrementally maintaining the latest observed service topology;
+- generating a local event-driven live map plus final textual and static graph output.
 
 Silhouette does **not** implement an OpenTelemetry SDK, instrumentation library, context propagator, custom trace protocol, or protobuf implementation. The external application used for manual integration testing must remain outside this repository and outside the product architecture.
 
@@ -149,3 +150,36 @@ Promising directions include:
 - remaining local, portable, and vendor-neutral.
 
 These are candidates, not V1 commitments.
+
+## V2.2 contract — event-driven live service map
+
+V2.2 keeps the V1 evidence and graph semantics while making the service map
+continuously visible during ingestion:
+
+```text
+accepted OTLP export
+  -> atomic active-trace publication
+  -> sorted unique dirty trace IDs
+  -> targeted latest-state reconstruction
+  -> per-trace contribution replacement
+  -> reference-counted aggregate topology version
+  -> coalescing Graphviz render
+  -> rendered-version SSE event
+  -> browser map update
+```
+
+Dirty IDs are invalidations, not immutable export snapshots. If several exports
+modify one trace before the graph worker runs, it reconstructs that trace from
+the newest retained evidence. Normal updates never rebuild unrelated traces.
+A full `ReplaceAll()` exists only as recovery if dirty-notification publication
+fails.
+
+Topology and rendering have separate monotonic versions. A render is published
+only if its topology version is still current; obsolete intermediate SVG frames
+may be discarded, but topology updates are not. Live Graphviz work uses private
+temporary files and owned SVG bytes. The loopback HTTP/SSE presentation adapter
+is intentionally thin and remains outside ingestion and the core graph model.
+
+V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
+persistence, authentication, a frontend framework, or incremental Graphviz
+layout. Active traces and their contributions remain process-lifetime state.
