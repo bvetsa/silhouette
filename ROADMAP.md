@@ -18,14 +18,23 @@ The result must be reproducible by another developer and must demonstrate correc
 
 The complete V1 contract, system boundary, engineering principles, and non-goals are defined in `PROJECT.md`.
 
-## Future versions
+## V2 — Continuous observed topology
 
-No post-V1 version scope is committed. A future version should be defined only after V1 is complete and its implementation evidence, limitations, and comparison with then-current tracing products have been reviewed.
+V2.1 replaced finite-only span capture with continuously inspectable active
+trace state. V2.2 incrementally maintains per-trace topology contributions and
+serves an event-driven live service map on loopback port 8008. These slices keep
+the V1 reconstruction and uncertainty semantics and intentionally retain all
+observed traces for the process lifetime.
+
+Later V2 slices should be defined from implementation evidence. Trace
+quiescence/finalization, bounded retention, and eviction remain separate work;
+they must not be inferred from the live-map lifecycle.
+
+## Future directions
 
 Candidate directions include:
 
 - confidence-aware observability-gap analysis;
-- live ingestion and incremental map updates;
 - individual request playback;
 - critical-path and concurrency analysis;
 - latency, error, volume, and failure-propagation analysis;

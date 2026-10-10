@@ -4,6 +4,8 @@ project(Silhouette LANGUAGES CXX)
 
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+find_package(httplib CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 include(FetchContent)
 
@@ -117,6 +119,7 @@ target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libpro
 
 add_library(silhouette_core
     src/active_trace_manager.cpp
+    src/incremental_service_graph.cpp
     src/service_graph.cpp
     src/span.cpp
     src/trace_reconstruction.cpp
@@ -129,12 +132,27 @@ silhouette_enable_warnings(silhouette_core)
 add_library(silhouette_rendering
     src/rendering/service_graph_dot.cpp
     src/rendering/service_graph_artifacts.cpp
+    src/rendering/service_graph_renderer.cpp
 )
 target_compile_features(silhouette_rendering PUBLIC cxx_std_20)
 set_target_properties(silhouette_rendering PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(silhouette_rendering PUBLIC include PRIVATE src)
 target_link_libraries(silhouette_rendering PUBLIC silhouette_core)
 silhouette_enable_warnings(silhouette_rendering)
+
+add_library(silhouette_live_map
+    src/live_service_map.cpp
+    src/local_map_server.cpp
+)
+target_compile_features(silhouette_live_map PUBLIC cxx_std_20)
+set_target_properties(silhouette_live_map PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(silhouette_live_map PUBLIC include)
+target_link_libraries(
+    silhouette_live_map
+    PUBLIC silhouette_core silhouette_rendering
+    PRIVATE httplib::httplib Threads::Threads
+)
+silhouette_enable_warnings(silhouette_live_map)
 
 add_library(silhouette_otlp_conversion
     src/ingestion/otlp_span_converter.cpp
@@ -180,7 +198,10 @@ add_executable(silhouette
 target_compile_features(silhouette PRIVATE cxx_std_20)
 set_target_properties(silhouette PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(silhouette PRIVATE src)
-target_link_libraries(silhouette PRIVATE silhouette_ingestion silhouette_rendering)
+target_link_libraries(
+    silhouette
+    PRIVATE silhouette_ingestion silhouette_live_map silhouette_rendering
+)
 silhouette_enable_warnings(silhouette)
 
 include(CTest)

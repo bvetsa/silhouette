@@ -38,6 +38,8 @@ struct ServiceGraph final {
     std::vector<std::string> services;
     std::vector<ServiceEdge> edges;
     std::vector<ServiceGraphGap> gaps;
+
+    bool operator==(const ServiceGraph&) const = default;
 };
 
 // Expects the structural invariants established by ReconstructTraces. This

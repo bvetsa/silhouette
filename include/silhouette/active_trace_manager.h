@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <map>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace silhouette {
@@ -24,11 +25,16 @@ public:
     ActiveTraceManager& operator=(ActiveTraceManager&&) = delete;
 
     // Publishes either the complete non-empty batch or none of it.
-    void AppendBatch(std::vector<Span> spans);
+    std::vector<TraceId> AppendBatch(std::vector<Span> spans);
 
     // Returns an owned point-in-time reconstruction. Later ingestion cannot
     // change the returned traces.
     [[nodiscard]] std::vector<ReconstructedTrace> Snapshot() const;
+
+    // Returns owned reconstructions for the requested trace IDs. Duplicate or
+    // unknown IDs do not duplicate evidence or create empty traces.
+    [[nodiscard]] std::vector<ReconstructedTrace> SnapshotTraces(
+        std::span<const TraceId> trace_ids) const;
 
     [[nodiscard]] std::size_t active_trace_count() const;
 

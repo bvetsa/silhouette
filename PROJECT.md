@@ -29,11 +29,12 @@ Silhouette is responsible for:
 - receiving OTLP trace exports;
 - extracting span data and resource-level service identity;
 - converting protocol objects into its own internal representation;
-- retaining the finite capture in memory;
+- retaining active trace evidence in memory while ingestion continues;
 - reconstructing traces from arbitrarily ordered spans;
 - identifying incomplete or inconsistent evidence;
 - aggregating cross-service relationships;
-- generating textual and static graph output.
+- incrementally maintaining the latest observed service topology;
+- generating a local event-driven live map plus final textual and static graph output.
 
 Silhouette does **not** implement an OpenTelemetry SDK, instrumentation library, context propagator, custom trace protocol, or protobuf implementation. The external application used for manual integration testing must remain outside this repository and outside the product architecture.
 
@@ -149,3 +150,69 @@ Promising directions include:
 - remaining local, portable, and vendor-neutral.
 
 These are candidates, not V1 commitments.
+
+## V2.2 contract — event-driven live service map
+
+V2.2 keeps the V1 evidence and graph semantics while making the service map
+continuously visible during ingestion:
+
+```text
+accepted OTLP export
+  -> atomic active-trace publication
+  -> sorted unique dirty trace IDs
+  -> targeted latest-state reconstruction
+  -> per-trace contribution replacement
+  -> reference-counted aggregate topology
+  -> observable state comparison (graph plus telemetry presence)
+  -> changed topology version only
+  -> coalescing Graphviz render
+  -> rendered-version SSE event
+  -> browser map update
+```
+
+Dirty IDs are invalidations, not immutable export snapshots. If several exports
+modify one trace before the graph worker runs, it reconstructs that trace from
+the newest retained evidence. Normal updates never rebuild unrelated traces.
+A full `ReplaceAll()` exists only as recovery if dirty-notification publication
+fails. Once dirty-set insertion fails, the accumulated dirty IDs are advisory
+until a successful full snapshot and `ReplaceAll()` resynchronize the graph.
+Incremental-update preparation failures preserve the observable graph snapshot;
+invisible empty or zero-count bookkeeping entries are not part of that contract.
+
+`topology_version` advances only when the deterministic `ServiceGraph` or the
+viewer-relevant `has_telemetry` state changes. Equivalent evidence still updates
+contributions and reference counts, but causes no version advance. It suppresses
+rendering only when the current topology already has a successfully published
+SVG; otherwise a new event requests a retry of that same version. A failed
+attempt retains the last valid SVG and waits for another event, without a timer
+or automatic retry loop. A successful current render cancels any equivalent
+retry requests queued during that attempt.
+`rendered_version` identifies the topology version of a successfully published
+SVG. Topology and rendering have separate monotonic versions. A render is published
+only if its topology version is still current; obsolete intermediate SVG frames
+may be discarded, but topology updates are not. Live Graphviz work uses private
+temporary files and owned SVG bytes. The loopback HTTP/SSE presentation adapter
+is intentionally thin and remains outside ingestion and the core graph model.
+Incremental reconstruction and topology maintenance do not imply incremental
+layout: each render still asks Graphviz to lay out the whole current graph, while
+obsolete pending render requests may be coalesced.
+
+HTTP/SSE presentation failures must not disable OTLP ingestion. Map-server
+startup failures, including an occupied loopback port 8008 or HTTP worker-pool
+failure, are diagnosed locally while the receiver continues starting. HTTP
+startup waits for worker-pool readiness; a failed start joins the listener and
+releases its socket before returning the error. The viewer URL is printed only
+when the map server starts successfully.
+The HTTP worker pool is fixed-size, using cpp-httplib's initial worker count,
+rather than growing threads during request admission. Failed queue allocation
+rejects only the unaccepted request, whose socket is closed by cpp-httplib; the
+listener and OTLP receiver remain available. Queue teardown wakes SSE waiters
+and joins its workers even if the listener exits through an exception.
+Persistent event streams are limited to one fewer than the HTTP worker count,
+leaving capacity for page and SVG requests. Excess `/events` requests receive
+HTTP 503 and a closed connection. An owned admission slot is released when a
+stream disconnects, shuts down, or fails, including during provider setup.
+
+V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
+persistence, authentication, a frontend framework, or incremental Graphviz
+layout. Active traces and their contributions remain process-lifetime state.

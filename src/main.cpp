@@ -1,5 +1,8 @@
 #include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/live_service_map.h"
+#include "silhouette/local_map_server.h"
+#include "silhouette/rendering/service_graph_renderer.h"
 #include "silhouette/service_graph.h"
 #include "silhouette/trace_reconstruction.h"
 #include "rendering/service_graph_artifacts.h"
@@ -13,6 +16,8 @@
 namespace {
 
 constexpr auto kListenAddress = "127.0.0.1:4317";
+constexpr auto kMapListenAddress = "127.0.0.1";
+constexpr int kMapPort = 8008;
 volatile std::sig_atomic_t shutdown_signal = 0;
 
 extern "C" void HandleShutdownSignal(const int signal)
@@ -37,12 +42,32 @@ int main()
 
     try {
         silhouette::ActiveTraceManager active_traces;
+        silhouette::rendering::GraphvizServiceGraphRenderer live_renderer;
+        silhouette::LiveServiceMap live_map{
+            active_traces, live_renderer, std::cerr};
+        silhouette::LocalMapServer map_server{
+            kMapListenAddress, kMapPort, live_map};
         silhouette::ingestion::OtlpGrpcReceiver receiver{
-            kListenAddress, active_traces};
+            kListenAddress, active_traces, &live_map};
+
+        live_map.Start();
+        bool map_server_started = false;
+        try {
+            map_server.Start();
+            map_server_started = true;
+        } catch (const std::exception& error) {
+            std::cerr << "Silhouette live map server failed to start: "
+                      << error.what() << ". OTLP ingestion will continue.\n";
+        }
         receiver.Start();
 
         std::cout << "Silhouette is listening for OTLP/gRPC traces on "
-                  << kListenAddress << ". Press Ctrl-C to stop." << std::endl;
+                  << kListenAddress << ".\n";
+        if (map_server_started) {
+            std::cout << "Service map available at http://"
+                      << kMapListenAddress << ':' << kMapPort << ".\n";
+        }
+        std::cout << "Press Ctrl-C to stop." << std::endl;
 
         std::uint64_t reported_span_count = 0;
         while (shutdown_signal == 0) {
@@ -58,6 +83,8 @@ int main()
         }
 
         receiver.Shutdown();
+        live_map.CloseAndDrain();
+        map_server.Shutdown();
         const auto traces = active_traces.Snapshot();
         const auto service_graph = silhouette::BuildServiceGraph(traces);
 

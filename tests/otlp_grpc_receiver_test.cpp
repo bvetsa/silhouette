@@ -1,9 +1,12 @@
 #include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/local_map_server.h"
 #include "silhouette/span.h"
 #include "active_trace_manager_test_peer.h"
+#include "local_map_server_test_peer.h"
 
 #include <grpcpp/grpcpp.h>
+#include <httplib.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
 #include <array>
@@ -14,11 +17,15 @@
 #include <iostream>
 #include <latch>
 #include <memory>
+#include <mutex>
+#include <new>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -42,20 +49,82 @@ std::string MakeIdBytes(const std::size_t size, const std::uint8_t marker)
     return bytes;
 }
 
+silhouette::TraceId MakeTraceId(const std::uint8_t marker)
+{
+    silhouette::TraceId::Bytes bytes{};
+    bytes.back() = static_cast<std::byte>(marker);
+    const auto trace_id = silhouette::TraceId::FromBytes(bytes);
+    Require(trace_id.has_value(), "test trace ID was invalid");
+    return *trace_id;
+}
+
 struct ReceiverFixture final {
     silhouette::ActiveTraceManager active_traces;
     Receiver receiver{kEphemeralAddress, active_traces};
 };
 
-std::size_t RetainedSpanCount(const ReceiverFixture& fixture)
+std::size_t RetainedSpanCount(
+    const silhouette::ActiveTraceManager& active_traces)
 {
-    const auto snapshot = fixture.active_traces.Snapshot();
+    const auto snapshot = active_traces.Snapshot();
     std::size_t count = 0;
     for (const auto& trace : snapshot) {
         count += trace.spans.size();
     }
     return count;
 }
+
+std::size_t RetainedSpanCount(const ReceiverFixture& fixture)
+{
+    return RetainedSpanCount(fixture.active_traces);
+}
+
+class RecordingUpdateSink final : public silhouette::TraceUpdateSink {
+public:
+    explicit RecordingUpdateSink(
+        const silhouette::ActiveTraceManager& active_traces)
+        : active_traces_{active_traces}
+    {
+    }
+
+    void SetReceiver(const Receiver& receiver) { receiver_ = &receiver; }
+
+    void NotifyTracesDirty(
+        std::vector<silhouette::TraceId> trace_ids) noexcept override
+    {
+        std::scoped_lock lock{mutex_};
+        notifications_.push_back(std::move(trace_ids));
+        retained_counts_.push_back(RetainedSpanCount(active_traces_));
+        accepted_counts_.push_back(receiver_->accepted_span_count());
+    }
+
+    [[nodiscard]] std::vector<std::vector<silhouette::TraceId>>
+    notifications() const
+    {
+        std::scoped_lock lock{mutex_};
+        return notifications_;
+    }
+
+    [[nodiscard]] std::vector<std::size_t> retained_counts() const
+    {
+        std::scoped_lock lock{mutex_};
+        return retained_counts_;
+    }
+
+    [[nodiscard]] std::vector<std::uint64_t> accepted_counts() const
+    {
+        std::scoped_lock lock{mutex_};
+        return accepted_counts_;
+    }
+
+private:
+    const silhouette::ActiveTraceManager& active_traces_;
+    const Receiver* receiver_{nullptr};
+    mutable std::mutex mutex_;
+    std::vector<std::vector<silhouette::TraceId>> notifications_;
+    std::vector<std::size_t> retained_counts_;
+    std::vector<std::uint64_t> accepted_counts_;
+};
 
 std::unique_ptr<otlp::TraceService::Stub> Connect(const Receiver& receiver)
 {
@@ -108,6 +177,71 @@ void RejectsEmptyAddress()
     }
 
     Require(rejected, "empty listen address was not rejected");
+}
+
+void HttpWorkerStartupFailureDoesNotDisableIngestion()
+{
+    ReceiverFixture fixture;
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap live_map{
+        fixture.active_traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    silhouette::testing::LocalMapServerTestPeer::FailWorkerStartup(server);
+    bool reported = false;
+    try {
+        server.Start();
+    } catch (const std::exception& error) {
+        reported = std::string_view{error.what()}.find(
+            "injected HTTP worker startup failure") != std::string_view::npos;
+    }
+    Require(reported, "HTTP worker failure did not reach the startup handler");
+
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "after HTTP worker failure");
+    ExportSuccessfully(*stub, request);
+    Require(fixture.receiver.accepted_span_count() == 1
+                && RetainedSpanCount(fixture) == 1,
+            "failed HTTP worker startup disabled OTLP ingestion");
+    fixture.receiver.Shutdown();
+    server.Shutdown();
+}
+
+void HttpEnqueueFailureDoesNotDisableIngestion()
+{
+    ReceiverFixture fixture;
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap live_map{
+        fixture.active_traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    std::size_t attempts = 0;
+    silhouette::testing::LocalMapServerTestPeer::BeforeEnqueue(server, [&] {
+        if (++attempts == 1) {
+            throw std::bad_alloc{};
+        }
+    });
+    server.Start();
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
+    httplib::Client client{"127.0.0.1", server.selected_port()};
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    Require(!client.Get("/"), "HTTP admission failure was not injected");
+
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "after HTTP enqueue failure");
+    ExportSuccessfully(*stub, request);
+    Require(fixture.receiver.accepted_span_count() == 1
+                && RetainedSpanCount(fixture) == 1,
+            "HTTP enqueue failure disabled OTLP ingestion");
+    const auto response = client.Get("/");
+    Require(response && response->status == 200,
+            "HTTP enqueue failure disabled later presentation requests");
+    fixture.receiver.Shutdown();
+    server.Shutdown();
 }
 
 void StartsOnEphemeralPort()
@@ -250,6 +384,43 @@ void AcceptedSpanCountNeverLeadsPublishedState()
             "published manager state did not cover the accepted-span count");
 }
 
+void NonEmptyExportsNotifyAfterPublication()
+{
+    silhouette::ActiveTraceManager active_traces;
+    RecordingUpdateSink sink{active_traces};
+    Receiver receiver{kEphemeralAddress, active_traces, &sink};
+    sink.SetReceiver(receiver);
+    receiver.Start();
+    auto stub = Connect(receiver);
+
+    ExportSuccessfully(*stub, {});
+    Require(sink.notifications().empty(),
+            "empty export emitted a dirty-trace notification");
+
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 2, 1, "trace-two");
+    AddValidSpan(request, 1, 1, "trace-one");
+    AddValidSpan(request, 2, 2, "trace-two-again");
+    ExportSuccessfully(*stub, request);
+
+    const auto notifications = sink.notifications();
+    Require(notifications.size() == 1,
+            "one accepted export did not emit exactly one notification");
+    Require(notifications.front()
+                == std::vector<silhouette::TraceId>{
+                    MakeTraceId(1),
+                    MakeTraceId(2),
+                },
+            "notification did not contain sorted unique affected trace IDs");
+
+    const auto retained_counts = sink.retained_counts();
+    const auto accepted_counts = sink.accepted_counts();
+    Require(retained_counts == std::vector<std::size_t>{3},
+            "notification ran before the complete accepted batch was retained");
+    Require(accepted_counts == std::vector<std::uint64_t>{3},
+            "notification ran before accepted counters advanced");
+}
+
 void RejectsSecondStart()
 {
     ReceiverFixture fixture;
@@ -339,6 +510,10 @@ struct TestCase {
 };
 
 constexpr std::array kTestCases{
+    TestCase{"http_enqueue_failure_does_not_disable_ingestion",
+             HttpEnqueueFailureDoesNotDisableIngestion},
+    TestCase{"http_worker_startup_failure_does_not_disable_ingestion",
+             HttpWorkerStartupFailureDoesNotDisableIngestion},
     TestCase{"rejects_empty_address", RejectsEmptyAddress},
     TestCase{"starts_on_ephemeral_port", StartsOnEphemeralPort},
     TestCase{"empty_export_is_accepted_without_active_trace",
@@ -349,6 +524,8 @@ constexpr std::array kTestCases{
              PartiallyValidExportReportsRejection},
     TestCase{"accepted_span_count_never_leads_published_state",
              AcceptedSpanCountNeverLeadsPublishedState},
+    TestCase{"non_empty_exports_notify_after_publication",
+             NonEmptyExportsNotifyAfterPublication},
     TestCase{"rejects_second_start", RejectsSecondStart},
     TestCase{"allows_shutdown_before_start", AllowsShutdownBeforeStart},
     TestCase{"allows_repeated_shutdown", AllowsRepeatedShutdown},

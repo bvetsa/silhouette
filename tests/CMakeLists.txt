@@ -37,6 +37,8 @@ add_active_trace_manager_test(child_before_parent_reconstructs_after_later_batch
 add_active_trace_manager_test(duplicate_span_ids_are_preserved)
 add_active_trace_manager_test(missing_parent_evidence_is_preserved)
 add_active_trace_manager_test(active_trace_count_tracks_distinct_ids)
+add_active_trace_manager_test(append_batch_returns_sorted_unique_affected_trace_ids)
+add_active_trace_manager_test(snapshot_traces_selects_latest_owned_state)
 add_active_trace_manager_test(equivalent_arrival_orders_produce_stable_snapshots)
 add_active_trace_manager_test(returned_snapshots_remain_owned_and_unchanged)
 add_active_trace_manager_test(concurrent_append_batches_lose_no_spans)
@@ -90,6 +92,36 @@ add_service_graph_test(parent_resolution_gaps_preserve_reasons)
 add_service_graph_test(cycle_gaps_keep_source_unknown_and_preserve_children)
 add_service_graph_test(output_is_stable_across_input_permutations)
 
+add_executable(
+    incremental_service_graph_test
+    incremental_service_graph_test.cpp
+)
+target_compile_features(incremental_service_graph_test PRIVATE cxx_std_20)
+set_target_properties(
+    incremental_service_graph_test PROPERTIES CXX_EXTENSIONS OFF
+)
+target_link_libraries(
+    incremental_service_graph_test PRIVATE silhouette_core Threads::Threads
+)
+silhouette_enable_warnings(incremental_service_graph_test)
+
+function(add_incremental_service_graph_test test_case)
+    add_test(
+        NAME incremental_service_graph_${test_case}
+        COMMAND incremental_service_graph_test ${test_case}
+    )
+endfunction()
+
+add_incremental_service_graph_test(first_contribution_matches_full_builder)
+add_incremental_service_graph_test(late_evidence_replaces_stale_contribution)
+add_incremental_service_graph_test(
+    shared_references_disappear_only_after_last_contributor
+)
+add_incremental_service_graph_test(replace_all_restores_authoritative_state)
+add_incremental_service_graph_test(
+    concurrent_snapshot_sees_complete_contribution_replacement
+)
+
 add_executable(service_graph_rendering_test service_graph_rendering_test.cpp)
 target_compile_features(service_graph_rendering_test PRIVATE cxx_std_20)
 set_target_properties(service_graph_rendering_test PROPERTIES CXX_EXTENSIONS OFF)
@@ -112,11 +144,88 @@ add_service_graph_rendering_test(parent_gaps_have_distinct_shapes_and_colors)
 add_service_graph_rendering_test(gap_connections_use_only_stored_endpoints)
 add_service_graph_rendering_test(output_is_stable_across_capture_permutations)
 add_service_graph_rendering_test(real_graphviz_produces_svg)
+add_service_graph_rendering_test(
+    live_renderer_returns_owned_svg_without_touching_public_artifacts
+)
 add_service_graph_rendering_test(dot_write_failure_has_file_context)
+add_service_graph_rendering_test(windows_process_arguments_preserve_paths)
 if(UNIX)
     add_service_graph_rendering_test(unavailable_graphviz_retains_dot_and_removes_stale_svg)
     add_service_graph_rendering_test(failing_graphviz_removes_partial_svg)
+    add_service_graph_rendering_test(
+        live_renderer_preserves_signal_delivery_while_graphviz_runs
+    )
 endif()
+
+add_executable(live_service_map_test live_service_map_test.cpp)
+target_compile_features(live_service_map_test PRIVATE cxx_std_20)
+set_target_properties(live_service_map_test PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(
+    live_service_map_test PRIVATE silhouette_live_map Threads::Threads
+)
+silhouette_enable_warnings(live_service_map_test)
+
+function(add_live_service_map_test test_case)
+    add_test(
+        NAME live_service_map_${test_case}
+        COMMAND live_service_map_test ${test_case}
+    )
+endfunction()
+
+add_live_service_map_test(
+    initial_empty_map_is_published_and_restart_is_rejected
+)
+add_live_service_map_test(dirty_trace_updates_publish_latest_topology)
+add_live_service_map_test(
+    equivalent_evidence_suppresses_renders_and_preserves_contributions
+)
+add_live_service_map_test(telemetry_flag_changes_empty_presentation_state)
+add_live_service_map_test(
+    dirty_trace_reconstructs_newest_authoritative_state
+)
+add_live_service_map_test(stale_render_is_discarded_in_favor_of_newest_version)
+add_live_service_map_test(render_failure_preserves_last_published_svg)
+add_live_service_map_test(equivalent_telemetry_retries_failed_current_render)
+add_live_service_map_test(
+    equivalent_telemetry_during_successful_render_does_not_render_again
+)
+add_live_service_map_test(failed_initial_render_retries_version_zero)
+add_live_service_map_test(
+    partial_dirty_merge_failure_falls_back_to_full_resync
+)
+add_live_service_map_test(
+    first_dirty_insertion_failure_falls_back_to_full_resync
+)
+add_live_service_map_test(shutdown_drains_final_dirty_topology_and_render)
+add_live_service_map_test(shutdown_drains_pending_coalesced_work)
+
+add_executable(local_map_server_test local_map_server_test.cpp)
+target_compile_features(local_map_server_test PRIVATE cxx_std_20)
+set_target_properties(local_map_server_test PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(
+    local_map_server_test
+    PRIVATE silhouette_live_map httplib::httplib Threads::Threads
+)
+silhouette_enable_warnings(local_map_server_test)
+
+function(add_local_map_server_test test_case)
+    add_test(
+        NAME local_map_server_${test_case}
+        COMMAND local_map_server_test ${test_case}
+    )
+endfunction()
+
+add_local_map_server_test(serves_viewer_and_latest_owned_svg)
+add_local_map_server_test(worker_startup_failure_is_reported_and_releases_port)
+add_local_map_server_test(enqueue_failure_rejects_only_that_request)
+add_local_map_server_test(enqueue_failure_while_sse_worker_busy_shuts_down_cleanly)
+add_local_map_server_test(sse_capacity_keeps_viewer_and_graph_routes_available)
+add_local_map_server_test(
+    sse_publishes_rendered_version_and_server_shutdown_wakes_waiter
+)
+add_local_map_server_test(
+    sse_heartbeat_wakes_idle_stream_and_detects_disconnect
+)
 
 add_executable(otlp_span_converter_test otlp_span_converter_test.cpp)
 target_compile_features(otlp_span_converter_test PRIVATE cxx_std_20)
@@ -152,7 +261,7 @@ target_compile_features(otlp_grpc_receiver_test PRIVATE cxx_std_20)
 set_target_properties(otlp_grpc_receiver_test PROPERTIES CXX_EXTENSIONS OFF)
 target_link_libraries(
     otlp_grpc_receiver_test
-    PRIVATE silhouette_ingestion
+    PRIVATE silhouette_ingestion silhouette_live_map httplib::httplib
 )
 target_include_directories(
     otlp_grpc_receiver_test
@@ -171,11 +280,14 @@ function(add_otlp_grpc_receiver_test test_case)
 endfunction()
 
 add_otlp_grpc_receiver_test(rejects_empty_address)
+add_otlp_grpc_receiver_test(http_worker_startup_failure_does_not_disable_ingestion)
+add_otlp_grpc_receiver_test(http_enqueue_failure_does_not_disable_ingestion)
 add_otlp_grpc_receiver_test(starts_on_ephemeral_port)
 add_otlp_grpc_receiver_test(empty_export_is_accepted_without_active_trace)
 add_otlp_grpc_receiver_test(fully_valid_export_publishes_active_trace_state)
 add_otlp_grpc_receiver_test(partially_valid_export_reports_rejection)
 add_otlp_grpc_receiver_test(accepted_span_count_never_leads_published_state)
+add_otlp_grpc_receiver_test(non_empty_exports_notify_after_publication)
 add_otlp_grpc_receiver_test(rejects_second_start)
 add_otlp_grpc_receiver_test(allows_shutdown_before_start)
 add_otlp_grpc_receiver_test(allows_repeated_shutdown)

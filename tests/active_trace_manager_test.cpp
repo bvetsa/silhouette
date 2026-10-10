@@ -214,6 +214,53 @@ void ActiveTraceCountTracksDistinctIds()
             "active count did not track distinct trace IDs");
 }
 
+void AppendBatchReturnsSortedUniqueAffectedTraceIds()
+{
+    ActiveTraceManager manager;
+    const auto affected = manager.AppendBatch({
+        MakeSpan(3, 1, "three"),
+        MakeSpan(1, 1, "one"),
+        MakeSpan(3, 2, "three-again"),
+        MakeSpan(2, 1, "two"),
+    });
+
+    Require(affected == std::vector<TraceId>{
+                            MakeTraceId(1),
+                            MakeTraceId(2),
+                            MakeTraceId(3),
+                        },
+            "append did not return sorted unique affected trace IDs");
+    Require(manager.AppendBatch({}).empty(),
+            "empty append reported affected trace IDs");
+}
+
+void SnapshotTracesSelectsLatestOwnedState()
+{
+    ActiveTraceManager manager;
+    manager.AppendBatch({
+        MakeSpan(1, 1, "one-root"),
+        MakeSpan(2, 1, "two-root"),
+    });
+
+    const std::array requested{
+        MakeTraceId(2), MakeTraceId(2), MakeTraceId(9)};
+    const auto selected = manager.SnapshotTraces(requested);
+    const auto selected_text = FormatReconstructedTraces(selected);
+
+    Require(selected.size() == 1 && selected.front().trace_id == MakeTraceId(2),
+            "targeted snapshot duplicated or invented requested traces");
+    Require(selected.front().spans.size() == 1,
+            "targeted snapshot omitted retained evidence");
+
+    manager.AppendBatch({MakeSpan(2, 2, "two-child", 1)});
+    const auto newest = manager.SnapshotTraces(requested);
+
+    Require(FormatReconstructedTraces(selected) == selected_text,
+            "targeted snapshot changed after later ingestion");
+    Require(newest.size() == 1 && newest.front().spans.size() == 2,
+            "later targeted snapshot did not use newest authoritative state");
+}
+
 void EquivalentArrivalOrdersProduceStableSnapshots()
 {
     ActiveTraceManager forward;
@@ -360,6 +407,10 @@ constexpr std::array kTestCases{
              MissingParentEvidenceIsPreserved},
     TestCase{"active_trace_count_tracks_distinct_ids",
              ActiveTraceCountTracksDistinctIds},
+    TestCase{"append_batch_returns_sorted_unique_affected_trace_ids",
+             AppendBatchReturnsSortedUniqueAffectedTraceIds},
+    TestCase{"snapshot_traces_selects_latest_owned_state",
+             SnapshotTracesSelectsLatestOwnedState},
     TestCase{"equivalent_arrival_orders_produce_stable_snapshots",
              EquivalentArrivalOrdersProduceStableSnapshots},
     TestCase{"returned_snapshots_remain_owned_and_unchanged",

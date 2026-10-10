@@ -1,6 +1,7 @@
 #include "silhouette/active_trace_manager.h"
 
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -11,10 +12,10 @@ static_assert(
     noexcept(std::declval<const TraceId&>() < std::declval<const TraceId&>()));
 static_assert(std::is_nothrow_move_constructible_v<std::vector<Span>>);
 
-void ActiveTraceManager::AppendBatch(std::vector<Span> spans)
+std::vector<TraceId> ActiveTraceManager::AppendBatch(std::vector<Span> spans)
 {
     if (spans.empty()) {
-        return;
+        return {};
     }
 
     std::map<TraceId, SpanBatches> incoming_by_trace;
@@ -25,6 +26,13 @@ void ActiveTraceManager::AppendBatch(std::vector<Span> spans)
             batches.emplace_back();
         }
         batches.front().push_back(std::move(span));
+    }
+
+    std::vector<TraceId> affected_trace_ids;
+    affected_trace_ids.reserve(incoming_by_trace.size());
+    for (const auto& [trace_id, batches] : incoming_by_trace) {
+        static_cast<void>(batches);
+        affected_trace_ids.push_back(trace_id);
     }
 
     std::scoped_lock lock{mutex_};
@@ -65,11 +73,46 @@ void ActiveTraceManager::AppendBatch(std::vector<Span> spans)
         incoming = incoming_by_trace.erase(incoming);
     }
     batches_by_trace_.merge(incoming_by_trace);
+    return affected_trace_ids;
 }
 
 std::vector<ReconstructedTrace> ActiveTraceManager::Snapshot() const
 {
     return SnapshotWithHook(nullptr, nullptr);
+}
+
+std::vector<ReconstructedTrace> ActiveTraceManager::SnapshotTraces(
+    const std::span<const TraceId> trace_ids) const
+{
+    const std::set<TraceId> unique_trace_ids{trace_ids.begin(), trace_ids.end()};
+    std::vector<Span> spans;
+    {
+        std::scoped_lock lock{mutex_};
+
+        std::size_t span_count = 0;
+        for (const auto& trace_id : unique_trace_ids) {
+            const auto found = batches_by_trace_.find(trace_id);
+            if (found == batches_by_trace_.end()) {
+                continue;
+            }
+            for (const auto& batch : found->second) {
+                span_count += batch.size();
+            }
+        }
+
+        spans.reserve(span_count);
+        for (const auto& trace_id : unique_trace_ids) {
+            const auto found = batches_by_trace_.find(trace_id);
+            if (found == batches_by_trace_.end()) {
+                continue;
+            }
+            for (const auto& batch : found->second) {
+                spans.insert(spans.end(), batch.begin(), batch.end());
+            }
+        }
+    }
+
+    return ReconstructTraces(std::move(spans));
 }
 
 std::vector<ReconstructedTrace> ActiveTraceManager::SnapshotWithHook(
