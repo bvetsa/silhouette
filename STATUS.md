@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-10-09
+Last updated: 2026-10-10
 
 ## Current status
 
@@ -50,8 +50,10 @@ The latest SSE-capacity and latch fixes build successfully and pass all nine
 focused HTTP/SSE and OTLP failure-isolation checks. All three SSE cases pass ten
 repetitions each (30 runs), including graph fetches at the stream-admission limit
 and admission recovery after disconnect. Full-suite and browser checks were not
-repeated for these focused changes. This handoff integrates V2.2 and the review
-fixes into local `main`; no remote push or pull request is requested.
+repeated for these focused changes. V2.2 and its review fixes belong only on
+`v2-live-service-graph`; `main` must retain the completed V2.1 baseline at
+`95c7914`. Commits are feature-branch only, with no direct V2.2 integration into
+`main` and no pull request opened.
 
 ## Next concrete step
 
