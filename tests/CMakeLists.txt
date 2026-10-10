@@ -148,6 +148,7 @@ add_service_graph_rendering_test(
     live_renderer_returns_owned_svg_without_touching_public_artifacts
 )
 add_service_graph_rendering_test(dot_write_failure_has_file_context)
+add_service_graph_rendering_test(windows_process_arguments_preserve_paths)
 if(UNIX)
     add_service_graph_rendering_test(unavailable_graphviz_retains_dot_and_removes_stale_svg)
     add_service_graph_rendering_test(failing_graphviz_removes_partial_svg)
@@ -184,6 +185,11 @@ add_live_service_map_test(
 )
 add_live_service_map_test(stale_render_is_discarded_in_favor_of_newest_version)
 add_live_service_map_test(render_failure_preserves_last_published_svg)
+add_live_service_map_test(equivalent_telemetry_retries_failed_current_render)
+add_live_service_map_test(
+    equivalent_telemetry_during_successful_render_does_not_render_again
+)
+add_live_service_map_test(failed_initial_render_retries_version_zero)
 add_live_service_map_test(
     partial_dirty_merge_failure_falls_back_to_full_resync
 )
@@ -210,6 +216,10 @@ function(add_local_map_server_test test_case)
 endfunction()
 
 add_local_map_server_test(serves_viewer_and_latest_owned_svg)
+add_local_map_server_test(worker_startup_failure_is_reported_and_releases_port)
+add_local_map_server_test(enqueue_failure_rejects_only_that_request)
+add_local_map_server_test(enqueue_failure_while_sse_worker_busy_shuts_down_cleanly)
+add_local_map_server_test(sse_capacity_keeps_viewer_and_graph_routes_available)
 add_local_map_server_test(
     sse_publishes_rendered_version_and_server_shutdown_wakes_waiter
 )
@@ -251,7 +261,7 @@ target_compile_features(otlp_grpc_receiver_test PRIVATE cxx_std_20)
 set_target_properties(otlp_grpc_receiver_test PROPERTIES CXX_EXTENSIONS OFF)
 target_link_libraries(
     otlp_grpc_receiver_test
-    PRIVATE silhouette_ingestion
+    PRIVATE silhouette_ingestion silhouette_live_map httplib::httplib
 )
 target_include_directories(
     otlp_grpc_receiver_test
@@ -270,6 +280,8 @@ function(add_otlp_grpc_receiver_test test_case)
 endfunction()
 
 add_otlp_grpc_receiver_test(rejects_empty_address)
+add_otlp_grpc_receiver_test(http_worker_startup_failure_does_not_disable_ingestion)
+add_otlp_grpc_receiver_test(http_enqueue_failure_does_not_disable_ingestion)
 add_otlp_grpc_receiver_test(starts_on_ephemeral_port)
 add_otlp_grpc_receiver_test(empty_export_is_accepted_without_active_trace)
 add_otlp_grpc_receiver_test(fully_valid_export_publishes_active_trace_state)

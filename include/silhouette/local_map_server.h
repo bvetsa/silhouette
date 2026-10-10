@@ -2,6 +2,7 @@
 
 #include "silhouette/live_service_map.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -25,6 +26,7 @@ public:
     LocalMapServer(LocalMapServer&&) = delete;
     LocalMapServer& operator=(LocalMapServer&&) = delete;
 
+    // Returns only after the HTTP worker pool starts; startup failures throw.
     void Start();
     void Shutdown() noexcept;
     [[nodiscard]] int selected_port() const noexcept;
@@ -32,7 +34,10 @@ public:
 private:
     friend class testing::LocalMapServerTestPeer;
 
-    void UseSingleWorkerForTesting();
+    void UseTwoWorkersForTesting();
+    void FailWorkerStartupForTesting();
+    void SetBeforeEnqueueHookForTesting(std::function<void()> hook);
+    void SetAfterSseReleaseHookForTesting(std::function<void()> hook);
 
     class Impl;
     std::unique_ptr<Impl> impl_;

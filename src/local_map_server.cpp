@@ -2,13 +2,21 @@
 
 #include <httplib.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <functional>
+#include <future>
+#include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -60,6 +68,110 @@ constexpr auto kViewerHtml = R"HTML(<!doctype html>
 constexpr auto kSseHeartbeatInterval = std::chrono::seconds{1};
 constexpr std::string_view kSseHeartbeat = ": keep-alive\n\n";
 
+void ReportHttpFailure(
+    const std::string_view operation, const std::string_view detail) noexcept
+{
+    try {
+        std::cerr << "Silhouette live map HTTP " << operation << ": "
+                  << detail << '\n';
+    } catch (...) {
+    }
+}
+
+class SseSlot final {
+public:
+    SseSlot(std::atomic<std::size_t>& active, const std::size_t limit,
+            std::function<void()> after_release)
+        : active_{active}, after_release_{std::move(after_release)}
+    {
+        auto count = active_.load();
+        while (count < limit) {
+            if (active_.compare_exchange_weak(count, count + 1)) {
+                acquired_ = true;
+                break;
+            }
+        }
+    }
+
+    SseSlot(const SseSlot&) = delete;
+    SseSlot& operator=(const SseSlot&) = delete;
+
+    ~SseSlot()
+    {
+        if (acquired_) {
+            active_.fetch_sub(1);
+            if (after_release_) {
+                try {
+                    after_release_();
+                } catch (...) {
+                    ReportHttpFailure("SSE cleanup hook failed", "test hook threw");
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] bool acquired() const noexcept { return acquired_; }
+
+private:
+    std::atomic<std::size_t>& active_;
+    std::function<void()> after_release_;
+    bool acquired_{false};
+};
+
+class HttpTaskQueue final : public httplib::TaskQueue {
+public:
+    HttpTaskQueue(httplib::Server& server, const std::size_t workers,
+                  std::stop_source stop_source,
+                  std::function<void()> before_enqueue)
+        : server_{server}
+        , stop_source_{std::move(stop_source)}
+        , before_enqueue_{std::move(before_enqueue)}
+        , pool_{workers, workers}
+    {
+    }
+
+    ~HttpTaskQueue() override { shutdown(); }
+
+    bool enqueue(std::function<void()> task) override
+    {
+        try {
+            if (before_enqueue_) {
+                before_enqueue_();
+            }
+            // Keep the pool fixed-size: cpp-httplib's dynamic expansion can
+            // throw AFTER accepting a job (or destroy a joinable temporary
+            // thread). With no expansion, enqueue's allocating list insertion
+            // either succeeds completely or throws before accepting the job.
+            return pool_.enqueue(std::move(task));
+        } catch (const std::exception& error) {
+            ReportHttpFailure("request rejected", error.what());
+        } catch (...) {
+            ReportHttpFailure("request rejected", "unknown queue error");
+        }
+        // The job was not accepted; cpp-httplib still owns and closes its socket.
+        return false;
+    }
+
+    void shutdown() override
+    {
+        if (!stopped_) {
+            // Also release SSE waiters if listen_internal() unwinds before our
+            // outer listener catch. Its queue destruction must join workers.
+            stop_source_.request_stop();
+            server_.stop();
+            pool_.shutdown();
+            stopped_ = true;
+        }
+    }
+
+private:
+    httplib::Server& server_;
+    std::stop_source stop_source_;
+    std::function<void()> before_enqueue_;
+    httplib::ThreadPool pool_;
+    bool stopped_{false};
+};
+
 } // namespace
 
 class LocalMapServer::Impl final {
@@ -76,6 +188,11 @@ public:
         if (requested_port_ < 0 || requested_port_ > 65535) {
             throw std::invalid_argument{"live map port is out of range"};
         }
+
+        server_.new_task_queue = [this] {
+            return new HttpTaskQueue{
+                server_, worker_count_, stop_source_, before_enqueue_hook_};
+        };
 
         server_.Get("/", [](const httplib::Request&, httplib::Response& response) {
             response.set_content(kViewerHtml, "text/html; charset=utf-8");
@@ -96,8 +213,21 @@ public:
         });
         server_.Get("/events", [this](const httplib::Request&,
                                       httplib::Response& response) {
-            const auto stop_token = stop_source_.get_token();
+            // Persistent SSE responses must leave a worker available for the
+            // page and graph fetches they trigger. Acquire before installing the
+            // provider; RAII also releases admission if provider setup throws.
+            auto slot = std::make_shared<SseSlot>(
+                active_sse_, worker_count_ - 1, after_sse_release_hook_);
+            response.set_header("Connection", "close");
             response.set_header("Cache-Control", "no-store");
+            if (!slot->acquired()) {
+                response.status = 503;
+                response.set_content(
+                    "Live map event-stream capacity is full. Try again later.\n",
+                    "text/plain; charset=utf-8");
+                return;
+            }
+            const auto stop_token = stop_source_.get_token();
             response.set_header("X-Accel-Buffering", "no");
             response.set_chunked_content_provider(
                 "text/event-stream",
@@ -130,7 +260,8 @@ public:
                         + "}\n\n";
                     version = published->rendered_version;
                     return sink.write(event.data(), event.size());
-                });
+                },
+                [slot = std::move(slot)](bool) mutable { slot.reset(); });
         });
     }
 
@@ -156,7 +287,46 @@ public:
         }
         started_once_ = true;
         started_ = true;
-        thread_ = std::thread{[this] { server_.listen_after_bind(); }};
+        try {
+            auto ready = startup_result_.get_future();
+            auto make_queue = std::move(server_.new_task_queue);
+            server_.new_task_queue = [this, make_queue = std::move(make_queue)] {
+                std::unique_ptr<httplib::TaskQueue> queue{make_queue()};
+                // is_running() becomes true before pool construction, so it
+                // cannot establish successful startup. Publish readiness here.
+                startup_result_.set_value();
+                startup_signaled_ = true;
+                return queue.release();
+            };
+            thread_ = std::thread{[this] {
+                try {
+                    if (!server_.listen_after_bind()) {
+                        throw std::runtime_error{"HTTP listen loop failed"};
+                    }
+                } catch (...) {
+                    server_.stop();
+                    if (!startup_signaled_) {
+                        startup_result_.set_exception(std::current_exception());
+                    } else {
+                        try {
+                            throw;
+                        } catch (const std::exception& error) {
+                            ReportHttpFailure("server stopped", error.what());
+                        } catch (...) {
+                            ReportHttpFailure(
+                                "server stopped", "unknown listener error");
+                        }
+                    }
+                }
+            }};
+            ready.get();
+        } catch (const std::exception&) {
+            Shutdown();
+            throw;
+        } catch (...) {
+            Shutdown();
+            throw std::runtime_error{"unknown HTTP worker startup failure"};
+        }
     }
 
     void Shutdown() noexcept
@@ -172,15 +342,44 @@ public:
         started_ = false;
     }
 
-    void UseSingleWorkerForTesting()
+    void UseTwoWorkersForTesting()
     {
         if (started_once_) {
             throw std::logic_error{
                 "live map worker count cannot change after startup"};
         }
-        server_.new_task_queue = [] {
-            return new httplib::ThreadPool{1, 1};
+        worker_count_ = 2;
+    }
+
+    void FailWorkerStartupForTesting()
+    {
+        if (started_once_) {
+            throw std::logic_error{
+                "live map worker factory cannot change after startup"};
+        }
+        server_.new_task_queue = []() -> httplib::TaskQueue* {
+            throw std::system_error{
+                std::make_error_code(std::errc::resource_unavailable_try_again),
+                "injected HTTP worker startup failure"};
         };
+    }
+
+    void SetBeforeEnqueueHookForTesting(std::function<void()> hook)
+    {
+        if (started_once_) {
+            throw std::logic_error{
+                "live map enqueue hook cannot change after startup"};
+        }
+        before_enqueue_hook_ = std::move(hook);
+    }
+
+    void SetAfterSseReleaseHookForTesting(std::function<void()> hook)
+    {
+        if (started_once_) {
+            throw std::logic_error{
+                "live map SSE release hook cannot change after startup"};
+        }
+        after_sse_release_hook_ = std::move(hook);
     }
 
     [[nodiscard]] int selected_port() const noexcept { return selected_port_; }
@@ -191,7 +390,14 @@ private:
     const LiveServiceMap& live_map_;
     httplib::Server server_;
     std::stop_source stop_source_;
+    std::size_t worker_count_{CPPHTTPLIB_THREAD_POOL_COUNT};
+    std::function<void()> before_enqueue_hook_;
+    std::atomic<std::size_t> active_sse_{0};
+    std::function<void()> after_sse_release_hook_;
     std::thread thread_;
+    std::promise<void> startup_result_;
+    // Only the listener thread and its worker-factory callback access this flag.
+    bool startup_signaled_{false};
     int selected_port_{0};
     bool started_once_{false};
     bool started_{false};
@@ -210,9 +416,21 @@ LocalMapServer::~LocalMapServer() = default;
 void LocalMapServer::Start() { impl_->Start(); }
 void LocalMapServer::Shutdown() noexcept { impl_->Shutdown(); }
 int LocalMapServer::selected_port() const noexcept { return impl_->selected_port(); }
-void LocalMapServer::UseSingleWorkerForTesting()
+void LocalMapServer::UseTwoWorkersForTesting()
 {
-    impl_->UseSingleWorkerForTesting();
+    impl_->UseTwoWorkersForTesting();
+}
+void LocalMapServer::FailWorkerStartupForTesting()
+{
+    impl_->FailWorkerStartupForTesting();
+}
+void LocalMapServer::SetBeforeEnqueueHookForTesting(std::function<void()> hook)
+{
+    impl_->SetBeforeEnqueueHookForTesting(std::move(hook));
+}
+void LocalMapServer::SetAfterSseReleaseHookForTesting(std::function<void()> hook)
+{
+    impl_->SetAfterSseReleaseHookForTesting(std::move(hook));
 }
 
 } // namespace silhouette

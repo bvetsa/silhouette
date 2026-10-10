@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -494,6 +495,122 @@ struct TopologyUpdateSync final {
     }
 };
 
+void EquivalentTelemetryRetriesFailedCurrentRender()
+{
+    ActiveTraceManager active_traces;
+    RecordingRenderer renderer;
+    renderer.FailCall(2);
+    std::ostringstream diagnostics;
+    TopologyUpdateSync idle_sync;
+    TopologyUpdateSync graph_sync;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    LiveServiceMapTestPeer::SetBeforeRenderWaitHook(
+        live_map, TopologyUpdateSync::Signal, &idle_sync);
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(
+        live_map, TopologyUpdateSync::Signal, &graph_sync);
+    live_map.Start();
+    const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
+    Require(initial && initial->rendered_version == 0,
+            "initial SVG was not published before the injected failure");
+    idle_sync.WaitFor(1);
+
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
+    }));
+    // This hook fires only once the failed attempt is consumed and the worker
+    // has no pending render request. No elapsed-time guess establishes idleness.
+    idle_sync.WaitFor(2);
+    const auto failed = live_map.SnapshotPublished();
+    Require(live_map.topology_version() == 1 && failed
+                && failed->rendered_version == 0 && failed->svg == initial->svg
+                && renderer.RenderedGraphs().size() == 2,
+            "failed render replaced the last SVG or retried without an event");
+
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
+    }));
+    graph_sync.WaitFor(2);
+    // The same publication wait used by SSE must observe the retried version.
+    // The timeout is only a failure bound, not a concurrency-ordering mechanism.
+    const auto recovered = live_map.WaitForPublishedAfter(
+        0, std::chrono::seconds{5});
+    live_map.CloseAndDrain();
+    Require(recovered && recovered->rendered_version == 1
+                && recovered->has_telemetry && live_map.topology_version() == 1,
+            "equivalent telemetry did not publish a retry of version one");
+    Require(renderer.RenderedGraphs().size() == 3,
+            "failed current render was not retried exactly once");
+    const auto retained = active_traces.Snapshot();
+    Require(retained.size() == 2
+                && retained[0].spans.size() + retained[1].spans.size() == 4
+                && live_map.SnapshotGraph()
+                    == silhouette::BuildServiceGraph(retained),
+            "render retry lost equivalent evidence or changed topology");
+    Require(diagnostics.str().find("injected render failure")
+                != std::string::npos,
+            "render failure was not reported before recovery");
+}
+
+void EquivalentTelemetryDuringSuccessfulRenderDoesNotRenderAgain()
+{
+    ActiveTraceManager active_traces;
+    RecordingRenderer renderer;
+    std::latch render_started{1};
+    std::latch release_render{1};
+    renderer.BlockCall(2, render_started, release_render);
+    std::ostringstream diagnostics;
+    TopologyUpdateSync graph_sync;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(
+        live_map, TopologyUpdateSync::Signal, &graph_sync);
+    live_map.Start();
+    const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
+    Require(initial.has_value(), "initial map was not published");
+
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
+    }));
+    render_started.wait();
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
+    }));
+    graph_sync.WaitFor(2);
+    release_render.count_down();
+    const auto published = live_map.WaitForPublishedAfter(0);
+    live_map.CloseAndDrain();
+    Require(published && published->rendered_version == 1
+                && live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "equivalent event caused a duplicate successfully rendered frame");
+}
+
+void FailedInitialRenderRetriesVersionZero()
+{
+    ActiveTraceManager active_traces;
+    RecordingRenderer renderer;
+    renderer.FailCall(1);
+    std::ostringstream diagnostics;
+    TopologyUpdateSync idle_sync;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    LiveServiceMapTestPeer::SetBeforeRenderWaitHook(
+        live_map, TopologyUpdateSync::Signal, &idle_sync);
+    live_map.Start();
+    idle_sync.WaitFor(1);
+    Require(!live_map.SnapshotPublished()
+                && renderer.RenderedGraphs().size() == 1,
+            "initial failure published an SVG or retried without an event");
+
+    // Exercise the empty presentation boundary without changing topology.
+    LiveServiceMapTestPeer::PublishTopology(live_map, {}, false);
+    const auto recovered = live_map.WaitForPublishedAfter(
+        std::nullopt, std::chrono::seconds{5});
+    live_map.CloseAndDrain();
+    Require(recovered && recovered->rendered_version == 0
+                && !recovered->has_telemetry && live_map.topology_version() == 0
+                && renderer.RenderedGraphs().size() == 2,
+            "version zero was mistaken for an already successful render");
+}
+
 void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
 {
     ActiveTraceManager active_traces;
@@ -597,6 +714,12 @@ struct TestCase final {
 };
 
 constexpr std::array kTestCases{
+    TestCase{"equivalent_telemetry_retries_failed_current_render",
+             EquivalentTelemetryRetriesFailedCurrentRender},
+    TestCase{"equivalent_telemetry_during_successful_render_does_not_render_again",
+             EquivalentTelemetryDuringSuccessfulRenderDoesNotRenderAgain},
+    TestCase{"failed_initial_render_retries_version_zero",
+             FailedInitialRenderRetriesVersionZero},
     TestCase{"equivalent_evidence_suppresses_renders_and_preserves_contributions",
              EquivalentEvidenceSuppressesRendersAndPreservesContributions},
     TestCase{"telemetry_flag_changes_empty_presentation_state",

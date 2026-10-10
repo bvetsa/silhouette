@@ -1,9 +1,12 @@
 #include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
+#include "silhouette/local_map_server.h"
 #include "silhouette/span.h"
 #include "active_trace_manager_test_peer.h"
+#include "local_map_server_test_peer.h"
 
 #include <grpcpp/grpcpp.h>
+#include <httplib.h>
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
 #include <array>
@@ -15,6 +18,8 @@
 #include <latch>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -172,6 +177,71 @@ void RejectsEmptyAddress()
     }
 
     Require(rejected, "empty listen address was not rejected");
+}
+
+void HttpWorkerStartupFailureDoesNotDisableIngestion()
+{
+    ReceiverFixture fixture;
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap live_map{
+        fixture.active_traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    silhouette::testing::LocalMapServerTestPeer::FailWorkerStartup(server);
+    bool reported = false;
+    try {
+        server.Start();
+    } catch (const std::exception& error) {
+        reported = std::string_view{error.what()}.find(
+            "injected HTTP worker startup failure") != std::string_view::npos;
+    }
+    Require(reported, "HTTP worker failure did not reach the startup handler");
+
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "after HTTP worker failure");
+    ExportSuccessfully(*stub, request);
+    Require(fixture.receiver.accepted_span_count() == 1
+                && RetainedSpanCount(fixture) == 1,
+            "failed HTTP worker startup disabled OTLP ingestion");
+    fixture.receiver.Shutdown();
+    server.Shutdown();
+}
+
+void HttpEnqueueFailureDoesNotDisableIngestion()
+{
+    ReceiverFixture fixture;
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap live_map{
+        fixture.active_traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    std::size_t attempts = 0;
+    silhouette::testing::LocalMapServerTestPeer::BeforeEnqueue(server, [&] {
+        if (++attempts == 1) {
+            throw std::bad_alloc{};
+        }
+    });
+    server.Start();
+    fixture.receiver.Start();
+    auto stub = Connect(fixture.receiver);
+    httplib::Client client{"127.0.0.1", server.selected_port()};
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    Require(!client.Get("/"), "HTTP admission failure was not injected");
+
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "after HTTP enqueue failure");
+    ExportSuccessfully(*stub, request);
+    Require(fixture.receiver.accepted_span_count() == 1
+                && RetainedSpanCount(fixture) == 1,
+            "HTTP enqueue failure disabled OTLP ingestion");
+    const auto response = client.Get("/");
+    Require(response && response->status == 200,
+            "HTTP enqueue failure disabled later presentation requests");
+    fixture.receiver.Shutdown();
+    server.Shutdown();
 }
 
 void StartsOnEphemeralPort()
@@ -440,6 +510,10 @@ struct TestCase {
 };
 
 constexpr std::array kTestCases{
+    TestCase{"http_enqueue_failure_does_not_disable_ingestion",
+             HttpEnqueueFailureDoesNotDisableIngestion},
+    TestCase{"http_worker_startup_failure_does_not_disable_ingestion",
+             HttpWorkerStartupFailureDoesNotDisableIngestion},
     TestCase{"rejects_empty_address", RejectsEmptyAddress},
     TestCase{"starts_on_ephemeral_port", StartsOnEphemeralPort},
     TestCase{"empty_export_is_accepted_without_active_trace",

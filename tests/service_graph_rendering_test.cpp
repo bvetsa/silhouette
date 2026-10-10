@@ -1,6 +1,7 @@
 #include "silhouette/rendering/service_graph_dot.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "rendering/service_graph_artifacts.h"
+#include "rendering/windows_process_arguments.h"
 
 #include <algorithm>
 #include <array>
@@ -338,6 +339,26 @@ void LiveRendererReturnsOwnedSvgWithoutTouchingPublicArtifacts()
             "live renderer modified the public V1 SVG artifact");
 }
 
+void WindowsProcessArgumentsPreservePaths()
+{
+    using silhouette::rendering::detail::QuoteWindowsProcessArgument;
+    Require(QuoteWindowsProcessArgument(R"(C:\Users\Jane Doe\graph.dot)")
+                == R"("C:\Users\Jane Doe\graph.dot")",
+            "Windows input path with spaces was not quoted");
+    Require(QuoteWindowsProcessArgument(R"(C:\Users\Jane Doe\graph.svg)")
+                == R"("C:\Users\Jane Doe\graph.svg")",
+            "Windows output path with spaces was not quoted");
+    Require(QuoteWindowsProcessArgument("a\tb") == "\"a\tb\"",
+            "Windows argument tab was not protected");
+    Require(QuoteWindowsProcessArgument("") == "\"\"",
+            "empty Windows argument was lost");
+    Require(QuoteWindowsProcessArgument("a\\\"b") == "\"a\\\\\\\"b\"",
+            "backslashes before a Windows quote were not escaped");
+    Require(QuoteWindowsProcessArgument("C:\\path with spaces\\")
+                == "\"C:\\path with spaces\\\\\"",
+            "trailing Windows backslash escaped the closing quote");
+}
+
 #ifndef _WIN32
 volatile std::sig_atomic_t received_graphviz_signal = 0;
 
@@ -484,6 +505,8 @@ struct TestCase final {
 };
 
 constexpr std::array kTestCases{
+    TestCase{"windows_process_arguments_preserve_paths",
+             WindowsProcessArgumentsPreservePaths},
     TestCase{"empty_graph_has_exact_legend", EmptyGraphHasExactLegend},
     TestCase{"known_topology_and_isolated_services", KnownTopologyAndIsolatedServices},
     TestCase{"service_labels_are_escaped", ServiceLabelsAreEscaped},

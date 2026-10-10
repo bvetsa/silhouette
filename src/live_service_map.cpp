@@ -260,6 +260,10 @@ void LiveServiceMap::RenderWorker()
         bool has_telemetry = false;
         {
             std::unique_lock lock{topology_mutex_};
+            if (!render_dirty_ && !topology_input_closed_
+                && before_render_wait_hook_) {
+                before_render_wait_hook_(before_render_wait_context_);
+            }
             topology_cv_.wait(lock, [&] {
                 return render_dirty_ || topology_input_closed_;
             });
@@ -302,6 +306,10 @@ void LiveServiceMap::RenderWorker()
                     .has_telemetry = has_telemetry,
                     .svg = std::move(result.svg),
                 };
+                latest_successful_rendered_version_ = version;
+                // Equivalent events during this attempt may have queued a
+                // retry. This successful current SVG makes that work redundant.
+                render_dirty_ = false;
             }
         }
         if (stale) {
@@ -317,15 +325,18 @@ void LiveServiceMap::PublishTopology(
 {
     {
         std::scoped_lock lock{topology_mutex_};
-        // Contributions/refcounts are already updated. Versions describe the
-        // viewer state, so equivalent evidence needs no new render request.
+        // Contributions/refcounts are already updated. Equivalent evidence
+        // keeps its version, but a new event retries a not-yet-rendered state.
         if (latest_topology_ == graph
             && topology_has_telemetry_ == has_telemetry) {
-            return;
+            if (latest_successful_rendered_version_ == topology_version_) {
+                return;
+            }
+        } else {
+            latest_topology_ = std::move(graph);
+            ++topology_version_;
+            topology_has_telemetry_ = has_telemetry;
         }
-        latest_topology_ = std::move(graph);
-        ++topology_version_;
-        topology_has_telemetry_ = has_telemetry;
         render_dirty_ = true;
     }
     topology_cv_.notify_one();

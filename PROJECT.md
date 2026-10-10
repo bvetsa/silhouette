@@ -181,7 +181,12 @@ invisible empty or zero-count bookkeeping entries are not part of that contract.
 
 `topology_version` advances only when the deterministic `ServiceGraph` or the
 viewer-relevant `has_telemetry` state changes. Equivalent evidence still updates
-contributions and reference counts, but causes no version advance or render.
+contributions and reference counts, but causes no version advance. It suppresses
+rendering only when the current topology already has a successfully published
+SVG; otherwise a new event requests a retry of that same version. A failed
+attempt retains the last valid SVG and waits for another event, without a timer
+or automatic retry loop. A successful current render cancels any equivalent
+retry requests queued during that attempt.
 `rendered_version` identifies the topology version of a successfully published
 SVG. Topology and rendering have separate monotonic versions. A render is published
 only if its topology version is still current; obsolete intermediate SVG frames
@@ -193,9 +198,20 @@ layout: each render still asks Graphviz to lay out the whole current graph, whil
 obsolete pending render requests may be coalesced.
 
 HTTP/SSE presentation failures must not disable OTLP ingestion. Map-server
-startup failures, including an occupied loopback port 8008, are diagnosed
-locally while the receiver continues starting. The viewer URL is printed only
+startup failures, including an occupied loopback port 8008 or HTTP worker-pool
+failure, are diagnosed locally while the receiver continues starting. HTTP
+startup waits for worker-pool readiness; a failed start joins the listener and
+releases its socket before returning the error. The viewer URL is printed only
 when the map server starts successfully.
+The HTTP worker pool is fixed-size, using cpp-httplib's initial worker count,
+rather than growing threads during request admission. Failed queue allocation
+rejects only the unaccepted request, whose socket is closed by cpp-httplib; the
+listener and OTLP receiver remain available. Queue teardown wakes SSE waiters
+and joins its workers even if the listener exits through an exception.
+Persistent event streams are limited to one fewer than the HTTP worker count,
+leaving capacity for page and SVG requests. Excess `/events` requests receive
+HTTP 503 and a closed connection. An owned admission slot is released when a
+stream disconnects, shuts down, or fails, including during provider setup.
 
 V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
 persistence, authentication, a frontend framework, or incremental Graphviz

@@ -1,6 +1,7 @@
 #include "silhouette/rendering/service_graph_renderer.h"
 
 #include "silhouette/rendering/service_graph_dot.h"
+#include "windows_process_arguments.h"
 
 #include <atomic>
 #include <cerrno>
@@ -74,12 +75,14 @@ std::string RunGraphviz(
     std::string svg{svg_path.string()};
 
 #ifdef _WIN32
+    const auto quoted_dot = detail::QuoteWindowsProcessArgument(dot);
+    const auto quoted_svg = detail::QuoteWindowsProcessArgument(svg);
     const char* arguments[]{
         program.c_str(),
         format.c_str(),
-        dot.c_str(),
+        quoted_dot.c_str(),
         output_flag.c_str(),
-        svg.c_str(),
+        quoted_svg.c_str(),
         nullptr,
     };
     const auto status = _spawnvp(_P_WAIT, program.c_str(), arguments);

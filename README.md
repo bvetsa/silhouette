@@ -51,9 +51,11 @@ collection cleanly with Ctrl-C to drain pending work and write the final V1
 diagnostics and artifacts. See `STATUS.md` for current limitations.
 
 Equivalent topology evidence still updates retained traces and contribution
-counts. A new topology version and render are requested only when the graph or
-the viewer's telemetry-presence state changes. A published rendered version
-identifies the topology version used for its SVG.
+counts. A new topology version is requested only when the graph or the viewer's
+telemetry-presence state changes. Equivalent updates suppress rendering once
+that version has a successful SVG; otherwise, the next update retries the
+current version without a timer or automatic retry loop. A published rendered
+version identifies the topology version used for its SVG.
 
 The incremental work is trace reconstruction and topology maintenance, not
 Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current
@@ -88,8 +90,13 @@ ctest --test-dir build --output-on-failure
 
 The `silhouette` executable listens for OTLP/gRPC trace exports on
 `127.0.0.1:4317` and serves its live map on `http://127.0.0.1:8008`. Map-server
-startup failures, including an occupied port, are diagnosed while OTLP
-ingestion continues. The viewer URL is printed only after successful startup.
+startup failures, including an occupied port or HTTP worker-pool failure, are
+diagnosed while OTLP ingestion continues. The viewer URL is printed only after
+successful startup. HTTP uses a fixed-size worker pool; a request-admission
+allocation failure is diagnosed and closes only that connection, without
+stopping the listener or ingestion.
+SSE streams leave one worker available for page and SVG requests; excess event
+streams receive HTTP 503 until a slot becomes available.
 The local page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
 over server-sent events and fetches completed in-memory SVG; there is no
 frontend build or browser polling loop. Stop Silhouette with Ctrl-C; it waits

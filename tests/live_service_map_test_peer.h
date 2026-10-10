@@ -10,6 +10,13 @@ class LiveServiceMapTestPeer final {
 public:
     using TestHook = void (*)(void*);
 
+    static void SetBeforeRenderWaitHook(
+        LiveServiceMap& live_map, TestHook hook, void* context)
+    {
+        live_map.before_render_wait_hook_ = hook;
+        live_map.before_render_wait_context_ = context;
+    }
+
     static void SetAfterTopologyUpdateHook(
         LiveServiceMap& live_map, TestHook hook, void* context)
     {

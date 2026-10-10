@@ -98,6 +98,8 @@ private:
     std::condition_variable topology_cv_;
     ServiceGraph latest_topology_;
     std::uint64_t topology_version_{0};
+    // Guarded by topology_mutex_; nullopt distinguishes no SVG from version 0.
+    std::optional<std::uint64_t> latest_successful_rendered_version_;
     bool topology_has_telemetry_{false};
     bool render_dirty_{true};
     bool topology_input_closed_{false};
@@ -119,6 +121,8 @@ private:
     void* before_trace_snapshot_context_{nullptr};
     TestHook after_topology_update_hook_{nullptr};
     void* after_topology_update_context_{nullptr};
+    TestHook before_render_wait_hook_{nullptr};
+    void* before_render_wait_context_{nullptr};
 };
 
 } // namespace silhouette
