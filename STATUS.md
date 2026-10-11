@@ -26,8 +26,9 @@ existing deterministic trace, service graph, DOT, and SVG outputs.
 
 ## Current task
 
-V2.4 bounded recent trace retention is implemented locally on
-`v2-bounded-retention`, based on merged V2.3 `main` at `66fbbb4`.
+V2.4 bounded recent trace retention is implemented and committed on
+`v2-bounded-retention` at implementation commit `8269c9a`, based on merged V2.3
+`main` at `66fbbb4`.
 The branch includes admission limits, presence-aware lookup, atomic graph
 reconciliation, automatic age/count eviction, exact OTLP capacity rejection,
 and an application shutdown guard. Production defaults remain 30-second
@@ -47,15 +48,16 @@ reappearance, and final artifacts derived only from retained evidence.
 The fresh full suite passes. Eleven concurrency-sensitive cases pass 100
 repetitions each (1,100 runs). Three new receiver/failure/partial-startup cases pass twenty repetitions each
 (60 runs). SVG XML inspection confirms fresh retained support with expired support
-absent. Final review and whitespace checks pass. Changes are
-local and uncommitted; no V2.4 remote push, PR, or CI outcome is claimed. Native
-Windows execution remains untested on this macOS host. TSan CI is an optional
-follow-up and no CD work is included.
+absent. Final review and whitespace checks pass. The feature branch is pushed.
+No pull request or GitHub Actions result has been verified yet. Native Windows
+execution remains untested on this macOS host. TSan CI is an optional follow-up
+and no CD work is included.
 
 ## Next concrete step
 
-Review and integrate V2.4 through a feature-branch PR. Keep future playback,
-inference, and aggregate active-state resource budgets separate.
+Open the V2.4 pull request, verify GitHub Actions CI, review the final PR diff,
+and merge only after CI passes. After merge, verify `main` CI. Keep future
+playback, inference, and aggregate active-state resource budgets separate.
 
 ## Accepted decisions
 
