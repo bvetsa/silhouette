@@ -28,8 +28,13 @@ time; late accepted evidence reopens them. These slices keep the V1
 reconstruction and uncertainty semantics and intentionally retain all observed
 traces and their topology contributions for the process lifetime.
 
-V2.4 will address bounded retention and deterministic eviction as a separate
-slice. Quiescence is not proof of trace completeness and does not evict evidence.
+V2.4 bounds recent quiescent history by count and age, caps spans per logical
+trace, and deterministically evicts complete quiescent records. The map converges
+to currently retained support; late evidence after eviction starts fresh. Active
+traces remain protected, so this is not a hard process-memory budget.
+
+Quiescence is not proof of completeness. Historical playback, architectural
+inference, and global resource/backpressure policy remain separate future work.
 Other later V2 slices should be defined from implementation evidence.
 
 ## Future directions

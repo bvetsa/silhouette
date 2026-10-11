@@ -63,7 +63,18 @@ Quiescent means operationally quiet, not known complete. All retained evidence
 still contributes to the map and remains available to reconstruction. Becoming
 quiescent does not change topology or trigger rendering; late evidence uses the
 ordinary update path. Status reports active and quiescent counts even when no
-new exports arrive. Evidence is not evicted in this slice.
+new exports arrive. Quiescent history is bounded to 1,000 traces and expires ten minutes after its
+last accepted evidence. The oldest quiescent traces leave first; active traces
+are protected. Eviction can remove services, edges, or gaps when their last
+retained supporter disappears. That means retained support was lost, not that
+Silhouette inferred the deployed relationship disappeared.
+
+Each logical trace accepts at most 10,000 spans. An over-limit incoming trace
+contribution is rejected as a whole while fitting sibling traces remain accepted,
+with exact OTLP partial-success reporting. Rejected evidence does not keep a
+trace active. Evidence arriving after eviction starts fresh; forgotten parents
+remain visible as gaps. These limits bound recent history, not total process
+memory under an unlimited active workload.
 
 The incremental work is trace reconstruction and topology maintenance, not
 Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current

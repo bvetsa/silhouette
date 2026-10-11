@@ -2,6 +2,7 @@
 
 #include "silhouette/span.h"
 #include "silhouette/trace_reconstruction.h"
+#include "silhouette/trace_eviction_sink.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -18,6 +19,23 @@ namespace silhouette {
 namespace testing {
 class ActiveTraceManagerTestPeer;
 }
+
+struct TraceRetentionLimits final {
+    std::size_t max_quiescent_traces{1000};
+    std::chrono::steady_clock::duration max_quiescent_age{std::chrono::minutes{10}};
+    std::size_t max_spans_per_trace{10000};
+};
+
+struct AppendResult final {
+    std::vector<TraceId> affected_trace_ids;
+    std::size_t accepted_span_count{0};
+    std::size_t capacity_rejected_span_count{0};
+};
+
+struct TraceLookup final {
+    TraceId trace_id;
+    std::optional<ReconstructedTrace> trace;
+};
 
 class ActiveTraceManager final {
 public:
@@ -38,6 +56,9 @@ public:
     // noexcept, and must not re-enter this manager. Context must outlive it.
     ActiveTraceManager(
         Clock::duration quiet_interval, ClockNow now, void* context);
+    ActiveTraceManager(Clock::duration quiet_interval, TraceRetentionLimits limits);
+    ActiveTraceManager(Clock::duration quiet_interval, TraceRetentionLimits limits,
+                       ClockNow now, void* context);
     ~ActiveTraceManager();
 
     ActiveTraceManager(const ActiveTraceManager&) = delete;
@@ -47,11 +68,13 @@ public:
 
     // Owner-thread operations, serialized with each other and destruction.
     // Start is one-shot; stopping before start does not consume that start.
-    void StartLifecycle();
+    // Sink must remain alive until StopLifecycle() returns.
+    void StartLifecycle(TraceEvictionSink* eviction_sink = nullptr);
     void StopLifecycle() noexcept;
 
-    // Publishes either the complete non-empty batch or none of it.
-    std::vector<TraceId> AppendBatch(std::vector<Span> spans);
+    // Rejects whole over-cap contributions per TraceId; publishes the complete
+    // admitted subset atomically. Rejections do not refresh lifecycle.
+    AppendResult AppendBatch(std::vector<Span> spans);
 
     // Returns an owned point-in-time reconstruction. Later ingestion cannot
     // change the returned traces.
@@ -60,6 +83,11 @@ public:
     // Returns owned reconstructions for the requested trace IDs. Duplicate or
     // unknown IDs do not duplicate evidence or create empty traces.
     [[nodiscard]] std::vector<ReconstructedTrace> SnapshotTraces(
+        std::span<const TraceId> trace_ids) const;
+
+    // One owned entry per unique requested ID, including absent IDs. Queries
+    // never refresh retention; presence/evidence are captured under one lock.
+    [[nodiscard]] std::vector<TraceLookup> LookupTraces(
         std::span<const TraceId> trace_ids) const;
 
     // Counts derive from retained lifecycle state. Active is non-monotonic;
@@ -71,6 +99,7 @@ public:
 
 private:
     using TestHook = void (*)(void*) noexcept;
+    using PreparationHook = void (*)(void*);
     using SpanBatches = std::vector<std::vector<Span>>;
     enum class TraceLifecycle { active, quiescent };
     struct TraceState final {
@@ -86,23 +115,36 @@ private:
         TestHook before_lock, void* context) const;
     static Clock::time_point ProductionNow(void*) noexcept;
     void LifecycleWorker();
-    // Samples once under mutex_; returns the remaining time to the next deadline.
-    std::optional<Clock::duration> SweepLifecycleLocked() noexcept;
+    struct SweepResult final {
+        std::optional<Clock::duration> next_wait;
+        std::vector<TraceId> evicted_ids;
+    };
+    // Prepare everything before committing lifecycle/retention state.
+    SweepResult SweepLifecycleLocked();
+    void PublishEvictions(std::vector<TraceId> trace_ids) noexcept;
 
     mutable std::mutex mutex_;
     std::map<TraceId, TraceState> batches_by_trace_;
     const Clock::duration quiet_interval_;
+    const TraceRetentionLimits retention_limits_;
     const ClockNow clock_now_;
     void* const clock_context_;
     std::condition_variable lifecycle_cv_;
     std::thread lifecycle_thread_;
     WorkerState worker_state_{WorkerState::not_started};
+    TraceEvictionSink* eviction_sink_{nullptr};
     TestHook before_commit_hook_{nullptr};
     void* before_commit_context_{nullptr};
     TestHook before_sweep_lock_hook_{nullptr};
     void* before_sweep_lock_context_{nullptr};
     TestHook after_sweep_hook_{nullptr};
     void* after_sweep_context_{nullptr};
+    PreparationHook before_retention_commit_hook_{nullptr};
+    void* before_retention_commit_context_{nullptr};
+    TestHook before_eviction_notify_hook_{nullptr};
+    void* before_eviction_notify_context_{nullptr};
+    TestHook after_stop_request_hook_{nullptr};
+    void* after_stop_request_context_{nullptr};
 };
 
 } // namespace silhouette

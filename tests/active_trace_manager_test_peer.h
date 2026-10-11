@@ -52,8 +52,34 @@ public:
     [[nodiscard]] static std::optional<ActiveTraceManager::Clock::duration>
     SweepLifecycle(ActiveTraceManager& manager)
     {
-        std::scoped_lock lock{manager.mutex_};
-        return manager.SweepLifecycleLocked();
+        ActiveTraceManager::SweepResult result;
+        {
+            std::scoped_lock lock{manager.mutex_};
+            result = manager.SweepLifecycleLocked();
+        }
+        manager.PublishEvictions(std::move(result.evicted_ids));
+        return result.next_wait;
+    }
+
+    static void SetBeforeRetentionCommitHook(
+        ActiveTraceManager& manager, void (*hook)(void*), void* context)
+    {
+        manager.before_retention_commit_hook_ = hook;
+        manager.before_retention_commit_context_ = context;
+    }
+
+    static void SetBeforeEvictionNotifyHook(
+        ActiveTraceManager& manager, Hook hook, void* context)
+    {
+        manager.before_eviction_notify_hook_ = hook;
+        manager.before_eviction_notify_context_ = context;
+    }
+
+    static void SetAfterStopRequestHook(
+        ActiveTraceManager& manager, Hook hook, void* context)
+    {
+        manager.after_stop_request_hook_ = hook;
+        manager.after_stop_request_context_ = context;
     }
 
     [[nodiscard]] static ActiveTraceManager::LifecycleCounts

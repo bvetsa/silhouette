@@ -28,6 +28,12 @@ public:
     // graph; invisible empty or zero-count bookkeeping entries may remain.
     void UpdateTraces(std::span<const ReconstructedTrace> traces);
 
+    // Atomically replaces present contributions and removes absent ones.
+    // The two input ID sets must be disjoint. Unknown/duplicate removals are
+    // harmless. Preparation failure preserves the observable previous graph.
+    void ReconcileTraces(std::span<const ReconstructedTrace> present_traces,
+                         std::span<const TraceId> absent_ids);
+
     // Failure-recovery path: atomically rebuilds every contribution.
     void ReplaceAll(std::span<const ReconstructedTrace> traces);
 
@@ -49,6 +55,8 @@ private:
     State state_;
     TestHook before_commit_hook_{nullptr};
     void* before_commit_context_{nullptr};
+    void (*before_reconcile_commit_hook_)(void*){nullptr};
+    void* before_reconcile_commit_context_{nullptr};
 };
 
 } // namespace silhouette

@@ -109,6 +109,13 @@ void LiveServiceMap::CloseAndDrain() noexcept
     closed_ = true;
 }
 
+void LiveServiceMap::NotifyTracesEvicted(std::vector<TraceId> trace_ids) noexcept
+{
+    // An old eviction can arrive after reappearance. Coalesce invalidations,
+    // then let LookupTraces decide replacement versus removal at processing time.
+    NotifyTracesDirty(std::move(trace_ids));
+}
+
 ServiceGraph LiveServiceMap::SnapshotGraph() const
 {
     return graph_.Snapshot();
@@ -212,8 +219,22 @@ void LiveServiceMap::GraphWorker()
                     before_trace_snapshot_hook_(
                         before_trace_snapshot_context_);
                 }
-                const auto traces = active_traces_.SnapshotTraces(dirty_ids);
-                graph_.UpdateTraces(traces);
+                auto lookups = active_traces_.LookupTraces(dirty_ids);
+                if (after_trace_lookup_hook_) {
+                    after_trace_lookup_hook_(after_trace_lookup_context_);
+                }
+                std::vector<ReconstructedTrace> present;
+                std::vector<TraceId> absent;
+                present.reserve(lookups.size());
+                absent.reserve(lookups.size());
+                for (auto& lookup : lookups) {
+                    if (lookup.trace) {
+                        present.push_back(std::move(*lookup.trace));
+                    } else {
+                        absent.push_back(lookup.trace_id);
+                    }
+                }
+                graph_.ReconcileTraces(present, absent);
             }
 
             PublishTopology(

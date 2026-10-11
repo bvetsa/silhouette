@@ -275,3 +275,79 @@ artifacts. Shutdown does not force remaining active traces to become quiescent.
 V2.3 does not add retention limits, eviction, deletion, persistence, completeness
 inference, a browser lifecycle view, a configuration framework, or a deadline
 heap/timing wheel. Bounded retention and deterministic eviction are V2.4 work.
+
+
+## V2.4 contract — bounded recent trace retention
+
+The current map represents currently retained observed evidence and converges
+asynchronously after admission or eviction. Losing the last retained support for
+a service, edge, or gap removes that fact from the canonical graph. This does
+not infer that a deployed relationship ceased to exist.
+
+Production retains at most 1,000 quiescent traces and expires quiescent evidence
+when `now - last_evidence_time >= 10 minutes`. Age is measured from last accepted
+evidence using the same injected steady clock as quiescence. Age expiration is
+inclusive. Count enforcement follows age eviction and removes the oldest last
+accepted evidence first, with lexicographic TraceId ties. Zero quiescent capacity
+is valid and immediately evicts newly quiescent traces. Active traces remain
+protected, even when the age horizon is shorter than the quiet interval.
+
+Each retained logical trace admits at most 10,000 spans, including duplicates.
+For each export, the manager rejects the entire incoming contribution for a
+trace that would exceed its span limit while admitting fitting sibling traces.
+It does not trim, segment, deduplicate, or fabricate evidence. Capacity-rejected
+contributions do not append, refresh timestamps, reopen traces, or invalidate
+topology. A smaller contribution may fit after a larger one was rejected; there
+is no persistent saturation flag.
+
+`AppendResult` reports sorted unique admitted trace IDs, admitted span count,
+and capacity-rejected span count. All fallible preparation precedes the atomic
+commit of the complete admitted subset. The receiver prepares the protobuf
+partial-success object and maximum message storage before publication. It uses
+stack-buffer decimal formatting after publication, then increments admitted
+counters and emits dirty invalidations. Zero rejection restores partial success
+to absent. Validation and capacity rejection counts and explanations are exact.
+Successfully processed fully rejected exports still count as requests. Accepted
+span totals are cumulative admissions, including evidence later evicted; they
+are not a gauge of spans currently retained.
+
+`LookupTraces()` preserves presence and absence for unique requested IDs from
+one owned snapshot. Existing snapshot APIs still return requested retained
+traces without absent entries, and earlier owned snapshots remain unchanged
+by eviction. Querying evidence never refreshes retention.
+
+Each lifecycle sweep samples time once under the manager mutex, prepares all
+bookkeeping, and commits quiescence, age eviction, then count enforcement.
+A preparation failure commits neither quiescence nor eviction. The worker
+reevaluates current metadata on the next publication wake or after a one-second
+failure-only backoff. It neither terminates nor busy-loops, and adds no diagnostic
+stream or error sink to the manager. During resource exhaustion, lifecycle can
+be delayed and retention limits can temporarily be exceeded.
+
+The same worker waits for the earliest active-quiescence or quiescent-expiry
+deadline. Committed evictions remove complete manager records without tombstones
+or historical topology storage. A later admitted span for the same TraceId starts
+a new retained incarnation using only newly available evidence; forgotten parents
+remain ordinary reconstruction gaps.
+
+A non-owning `TraceEvictionSink` receives `NotifyTracesEvicted()` only after
+manager unlock. These notifications are latest-state invalidations, not deletion
+commands. The graph worker looks up current authoritative state and atomically
+reconciles present replacements and absent removals. The input ID sets are
+disjoint. Unknown or repeated removals are harmless, shared reference counts
+survive until their last supporter disappears, and preparation failure preserves
+the observable previous graph. Failed notification insertion requests a full
+resync. Retention never waits for graph processing, rendering, HTTP, or SSE.
+
+The application arms an RAII shutdown guard before any worker starts. It stops
+and joins OTLP, stops and joins lifecycle work, drains topology/rendering, then
+stops HTTP/SSE on both normal shutdown and exceptional startup. Pre-start cleanup
+is harmless. A sink remains alive until lifecycle stop returns, and notifications
+for already committed evictions are delivered before the worker finishes.
+Shutdown forces neither quiescence nor eviction. Final diagnostics and DOT/SVG
+artifacts use currently retained evidence.
+
+V2.4 bounds quiescent count/age and per-trace span count, not aggregate active
+state, arbitrary span bytes, temporary processing, or externally owned snapshots.
+Global backpressure/resource budgets, persistence, history/playback, inference,
+span segmentation, configuration frameworks, and sanitizer CI remain separate.

@@ -212,12 +212,85 @@ void ConcurrentSnapshotSeesCompleteContributionReplacement()
             "snapshot observed a partial contribution replacement");
 }
 
+
+void MixedReconciliationRemovesLastReferencesAtomically()
+{
+    IncrementalServiceGraph graph;
+    const std::array initial{MakeEdgeTrace(1, "A", "B"), MakeEdgeTrace(2, "A", "B")};
+    graph.UpdateTraces(initial);
+    const std::array remove_first{MakeTraceId(1), MakeTraceId(1), MakeTraceId(9)};
+    graph.ReconcileTraces({}, remove_first);
+    Require(graph.Snapshot() == BuildServiceGraph(std::span{&initial[1], std::size_t{1}}),
+            "duplicate/unknown removal destroyed shared reference counts");
+    graph.UpdateTraces(initial);
+    AtomicUpdateSync sync;
+    IncrementalServiceGraphTestPeer::SetBeforeCommitHook(graph, PauseBeforeCommit, &sync);
+    const std::array replacement{MakeEdgeTrace(1, "A", "C")};
+    const std::array absent{MakeTraceId(2)};
+    std::thread writer{[&] { graph.ReconcileTraces(replacement, absent); }};
+    sync.update_holds_lock.wait();
+    silhouette::ServiceGraph observed;
+    std::thread reader{[&] {
+        sync.snapshot_attempted.count_down();
+        observed = graph.Snapshot();
+    }};
+    writer.join();
+    reader.join();
+    Require(observed == BuildServiceGraph(replacement),
+            "snapshot observed a half-reconciled mixed batch or stale service");
+}
+
+void ReconciliationPreparationFailurePreservesObservableGraph()
+{
+    IncrementalServiceGraph graph;
+    const std::array initial{MakeEdgeTrace(1, "A", "B"), MakeEdgeTrace(2, "B", "D")};
+    graph.UpdateTraces(initial);
+    const auto before = graph.Snapshot();
+    IncrementalServiceGraphTestPeer::SetBeforeReconcileCommitHook(
+        graph, [](void*) { throw std::bad_alloc{}; }, nullptr);
+    const std::array replacement{MakeEdgeTrace(1, "A", "C")};
+    const std::array absent{MakeTraceId(2)};
+    bool failed = false;
+    try {
+        graph.ReconcileTraces(replacement, absent);
+    } catch (const std::bad_alloc&) {
+        failed = true;
+    }
+    Require(failed && graph.Snapshot() == before,
+            "preparation failure exposed partially reconciled topology");
+    IncrementalServiceGraphTestPeer::SetBeforeReconcileCommitHook(graph, nullptr, nullptr);
+    graph.ReconcileTraces(replacement, absent);
+    Require(graph.Snapshot() == BuildServiceGraph(replacement),
+            "reconciliation did not recover after preparation failure");
+    const std::array last{MakeTraceId(1)};
+    graph.ReconcileTraces({}, last);
+    Require(graph.Snapshot().services.empty() && graph.Snapshot().edges.empty(),
+            "last contributor removal retained historical topology");
+    const auto gaps = silhouette::ReconstructTraces({
+        MakeSpan(3, 1, std::string{"orphan"}, 9),
+        MakeSpan(4, 1, std::string{"orphan"}, 9)});
+    graph.UpdateTraces(gaps);
+    Require(graph.Snapshot().gaps.size() == 1, "shared gap was not deduplicated");
+    const std::array first_gap{MakeTraceId(3)};
+    graph.ReconcileTraces({}, first_gap);
+    Require(graph.Snapshot().gaps.size() == 1, "first removal destroyed shared gap support");
+    const std::array last_gap{MakeTraceId(4)};
+    graph.ReconcileTraces({}, last_gap);
+    Require(graph.Snapshot().gaps.empty() && graph.Snapshot().services.empty(),
+            "last gap supporter removal retained stale uncertainty or service facts");
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"mixed_reconciliation_is_atomic",
+             MixedReconciliationRemovesLastReferencesAtomically},
+    TestCase{"reconciliation_preparation_failure_preserves_graph",
+             ReconciliationPreparationFailurePreservesObservableGraph},
+
     TestCase{"first_contribution_matches_full_builder",
              FirstContributionMatchesFullBuilder},
     TestCase{"late_evidence_replaces_stale_contribution",

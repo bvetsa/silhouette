@@ -6,6 +6,7 @@
 #include "silhouette/service_graph.h"
 #include "silhouette/trace_reconstruction.h"
 #include "rendering/service_graph_artifacts.h"
+#include "application_shutdown_guard.h"
 
 #include <chrono>
 #include <csignal>
@@ -50,8 +51,10 @@ int main()
             kMapListenAddress, kMapPort, live_map};
         silhouette::ingestion::OtlpGrpcReceiver receiver{
             kListenAddress, active_traces, &live_map};
+        silhouette::ApplicationShutdownGuard shutdown{
+            receiver, active_traces, live_map, map_server};
 
-        active_traces.StartLifecycle();
+        active_traces.StartLifecycle(&live_map);
         live_map.Start();
         bool map_server_started = false;
         try {
@@ -89,10 +92,7 @@ int main()
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
         }
 
-        receiver.Shutdown();
-        active_traces.StopLifecycle();
-        live_map.CloseAndDrain();
-        map_server.Shutdown();
+        shutdown.Shutdown();
         const auto traces = active_traces.Snapshot();
         const auto service_graph = silhouette::BuildServiceGraph(traces);
 
