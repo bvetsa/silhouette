@@ -9,6 +9,11 @@ These instructions apply to any coding agent working in this repository.
 - Identify the existing architecture, conventions, contracts, and repository boundaries that apply to the task.
 - If sources of truth conflict or a blocking requirement is ambiguous, surface the conflict instead of guessing.
 
+## Git workflow
+
+- Never commit directly to `main` or push changes directly to `main`.
+- Work on a feature branch. If the checkout is on `main`, create or switch to a feature branch before editing or committing. Integrate changes into `main` through a pull request.
+
 ## Making changes
 
 - Implement the smallest coherent change that satisfies the request.
