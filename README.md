@@ -10,7 +10,9 @@ Silhouette currently:
 - converts OpenTelemetry protocol data into a small, transport-independent C++ span model;
 - groups spans by trace and reconstructs parent-child structure regardless of arrival order;
 - derives directed service relationships without treating every same-service child span as a new service edge;
-- maintains continuously inspectable active-trace state while ingestion runs;
+- retains inspectable traces while ingestion runs, distinguishing active traces
+  from quiescent traces after 30 seconds without accepted evidence;
+- reopens quiescent traces when late evidence arrives;
 - updates the observed service topology incrementally when accepted telemetry changes;
 - exposes an event-driven live SVG map at `http://127.0.0.1:8008`;
 - produces readable trace diagnostics, deterministic DOT output, and a static service map at shutdown;
@@ -25,7 +27,7 @@ external OpenTelemetry-instrumented application
                          |
                          | OTLP traces
                          v
-             active trace state
+            retained trace state
                          |
                          v
            targeted trace reconstruction
@@ -56,6 +58,12 @@ telemetry-presence state changes. Equivalent updates suppress rendering once
 that version has a successful SVG; otherwise, the next update retries the
 current version without a timer or automatic retry loop. A published rendered
 version identifies the topology version used for its SVG.
+
+Quiescent means operationally quiet, not known complete. All retained evidence
+still contributes to the map and remains available to reconstruction. Becoming
+quiescent does not change topology or trigger rendering; late evidence uses the
+ordinary update path. Status reports active and quiescent counts even when no
+new exports arrive. Evidence is not evicted in this slice.
 
 The incremental work is trace reconstruction and topology maintenance, not
 Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current
@@ -100,7 +108,8 @@ streams receive HTTP 503 until a slot becomes available.
 The local page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
 over server-sent events and fetches completed in-memory SVG; there is no
 frontend build or browser polling loop. Stop Silhouette with Ctrl-C; it waits
-for in-flight requests, drains topology and rendering work, and then
+for in-flight requests, stops the trace lifecycle worker without forcing active
+traces to become quiescent, drains topology and rendering work, and then
 prints the accepted export-request and span totals followed by deterministic
 reconstructed trace trees and a deterministic service-graph summary. Valid spans
 are converted to protobuf-independent values and retained in memory as complete

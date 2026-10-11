@@ -22,13 +22,15 @@ The complete V1 contract, system boundary, engineering principles, and non-goals
 
 V2.1 replaced finite-only span capture with continuously inspectable active
 trace state. V2.2 incrementally maintains per-trace topology contributions and
-serves an event-driven live service map on loopback port 8008. These slices keep
-the V1 reconstruction and uncertainty semantics and intentionally retain all
-observed traces for the process lifetime.
+serves an event-driven live service map on loopback port 8008. V2.3 distinguishes
+active traces from operationally quiescent traces using monotonic observation
+time; late accepted evidence reopens them. These slices keep the V1
+reconstruction and uncertainty semantics and intentionally retain all observed
+traces and their topology contributions for the process lifetime.
 
-Later V2 slices should be defined from implementation evidence. Trace
-quiescence/finalization, bounded retention, and eviction remain separate work;
-they must not be inferred from the live-map lifecycle.
+V2.4 will address bounded retention and deterministic eviction as a separate
+slice. Quiescence is not proof of trace completeness and does not evict evidence.
+Other later V2 slices should be defined from implementation evidence.
 
 ## Future directions
 

@@ -1,6 +1,7 @@
 #include "silhouette/live_service_map.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "live_service_map_test_peer.h"
+#include "trace_lifecycle_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +35,10 @@ using silhouette::TraceId;
 using silhouette::rendering::ServiceGraphRenderer;
 using silhouette::rendering::SvgRenderResult;
 using silhouette::testing::LiveServiceMapTestPeer;
+using silhouette::testing::ActiveTraceManagerTestPeer;
+using silhouette::testing::FakeTraceClock;
+using silhouette::testing::LifecycleSweepSync;
+using silhouette::testing::AdvanceAndWakeLifecycle;
 
 void Require(const bool condition, const std::string_view message)
 {
@@ -708,12 +713,113 @@ void TelemetryFlagChangesEmptyPresentationState()
             "unchanged telemetry flag and empty graph rendered again");
 }
 
+void QuiescencePreservesTopologyVersionsAndTelemetry()
+{
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    TopologyUpdateSync updates;
+    ActiveTraceManager active_traces{
+        std::chrono::hours{1}, FakeTraceClock::Now, &clock};
+    RecordingRenderer renderer;
+    std::ostringstream diagnostics;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(
+        active_traces, LifecycleSweepSync::Signal, &sweeps);
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(
+        live_map, TopologyUpdateSync::Signal, &updates);
+    active_traces.StartLifecycle();
+    live_map.Start();
+    Require(live_map.WaitForPublishedAfter(std::nullopt).has_value(),
+            "initial map was not published");
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
+    }));
+    const auto first = live_map.WaitForPublishedAfter(0);
+    Require(first && first->has_telemetry, "first topology lacked telemetry");
+    updates.WaitFor(1);
+    const auto graph = live_map.SnapshotGraph();
+    sweeps.WaitFor(AdvanceAndWakeLifecycle(
+        active_traces, clock, sweeps, std::chrono::hours{1}));
+    Require(active_traces.lifecycle_counts()
+                == ActiveTraceManager::LifecycleCounts{0, 1, 1},
+            "trace did not become quiescent");
+    Require(live_map.SnapshotGraph() == graph && live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "lifecycle-only transition churned topology or rendering");
+
+    // A delayed invalidation still reads retained state after every trace is
+    // quiet. It must neither erase telemetry presence nor cause a new render.
+    live_map.NotifyTracesDirty({MakeTraceId(1)});
+    updates.WaitFor(2);
+    active_traces.StopLifecycle();
+    live_map.CloseAndDrain();
+    const auto published = live_map.SnapshotPublished();
+    Require(published && published->has_telemetry
+                && published->rendered_version == 1
+                && published->svg == first->svg
+                && live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2
+                && live_map.SnapshotGraph() == graph
+                && graph == silhouette::BuildServiceGraph(active_traces.Snapshot()),
+            "quiet retained traces changed presentation or lost contributions");
+}
+
+void LateParentReopensQuiescentTraceAndReplacesGap()
+{
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    ActiveTraceManager active_traces{
+        std::chrono::hours{1}, FakeTraceClock::Now, &clock};
+    RecordingRenderer renderer;
+    std::ostringstream diagnostics;
+    LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(
+        active_traces, LifecycleSweepSync::Signal, &sweeps);
+    active_traces.StartLifecycle();
+    live_map.Start();
+    Require(live_map.WaitForPublishedAfter(std::nullopt).has_value(),
+            "initial map was not published");
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 2, "checkout", 1),
+    }));
+    Require(live_map.WaitForPublishedAfter(0).has_value()
+                && live_map.SnapshotGraph().gaps.size() == 1,
+            "initial missing-parent gap was not published");
+    sweeps.WaitFor(AdvanceAndWakeLifecycle(
+        active_traces, clock, sweeps, std::chrono::hours{1}));
+    Require(active_traces.quiescent_trace_count() == 1
+                && live_map.topology_version() == 1
+                && renderer.RenderedGraphs().size() == 2,
+            "quiescence altered the retained gap presentation");
+    live_map.NotifyTracesDirty(active_traces.AppendBatch({
+        MakeSpan(1, 1, "frontend"),
+    }));
+    const auto reopened = live_map.WaitForPublishedAfter(1);
+    active_traces.StopLifecycle();
+    live_map.CloseAndDrain();
+    const auto graph = live_map.SnapshotGraph();
+    Require(active_traces.lifecycle_counts()
+                == ActiveTraceManager::LifecycleCounts{1, 0, 1}
+                && reopened && reopened->has_telemetry
+                && reopened->rendered_version == 2 && graph.gaps.empty()
+                && graph.edges == std::vector<silhouette::ServiceEdge>{
+                    {"frontend", "checkout"}}
+                && graph == silhouette::BuildServiceGraph(active_traces.Snapshot())
+                && active_traces.Snapshot().front().spans.size() == 2
+                && renderer.RenderedGraphs().size() == 3,
+            "late parent failed to reopen the retained trace and replace its gap");
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"quiescence_preserves_topology_versions_and_telemetry",
+             QuiescencePreservesTopologyVersionsAndTelemetry},
+    TestCase{"late_parent_reopens_quiescent_trace_and_replaces_gap",
+             LateParentReopensQuiescentTraceAndReplacesGap},
     TestCase{"equivalent_telemetry_retries_failed_current_render",
              EquivalentTelemetryRetriesFailedCurrentRender},
     TestCase{"equivalent_telemetry_during_successful_render_does_not_render_again",

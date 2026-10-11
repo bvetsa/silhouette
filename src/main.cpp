@@ -18,6 +18,7 @@ namespace {
 constexpr auto kListenAddress = "127.0.0.1:4317";
 constexpr auto kMapListenAddress = "127.0.0.1";
 constexpr int kMapPort = 8008;
+constexpr auto kTraceQuietInterval = std::chrono::seconds{30};
 volatile std::sig_atomic_t shutdown_signal = 0;
 
 extern "C" void HandleShutdownSignal(const int signal)
@@ -41,7 +42,7 @@ int main()
     }
 
     try {
-        silhouette::ActiveTraceManager active_traces;
+        silhouette::ActiveTraceManager active_traces{kTraceQuietInterval};
         silhouette::rendering::GraphvizServiceGraphRenderer live_renderer;
         silhouette::LiveServiceMap live_map{
             active_traces, live_renderer, std::cerr};
@@ -50,6 +51,7 @@ int main()
         silhouette::ingestion::OtlpGrpcReceiver receiver{
             kListenAddress, active_traces, &live_map};
 
+        active_traces.StartLifecycle();
         live_map.Start();
         bool map_server_started = false;
         try {
@@ -70,19 +72,25 @@ int main()
         std::cout << "Press Ctrl-C to stop." << std::endl;
 
         std::uint64_t reported_span_count = 0;
+        silhouette::ActiveTraceManager::LifecycleCounts reported_lifecycle_counts;
         while (shutdown_signal == 0) {
             const auto accepted_span_count = receiver.accepted_span_count();
-            if (accepted_span_count != reported_span_count) {
+            const auto counts = active_traces.lifecycle_counts();
+            if (accepted_span_count != reported_span_count
+                || counts != reported_lifecycle_counts) {
                 std::cout << "Live state: "
-                          << active_traces.active_trace_count()
-                          << " active trace(s), " << accepted_span_count
+                          << counts.active << " active trace(s), "
+                          << counts.quiescent << " quiescent trace(s), "
+                          << accepted_span_count
                           << " accepted span(s)." << std::endl;
                 reported_span_count = accepted_span_count;
+                reported_lifecycle_counts = counts;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
         }
 
         receiver.Shutdown();
+        active_traces.StopLifecycle();
         live_map.CloseAndDrain();
         map_server.Shutdown();
         const auto traces = active_traces.Snapshot();

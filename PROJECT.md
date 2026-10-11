@@ -216,3 +216,62 @@ stream disconnects, shuts down, or fails, including during provider setup.
 V2.2 does not add trace finalization, quiescence, eviction, bounded retention,
 persistence, authentication, a frontend framework, or incremental Graphviz
 layout. Active traces and their contributions remain process-lifetime state.
+
+## V2.3 contract — trace quiescence
+
+Each retained trace is either **active** or **quiescent**. Operational
+finalization means that no accepted evidence has arrived for the quiet interval;
+it does not establish that a trace is complete. Production uses a 30-second
+interval passed directly to `ActiveTraceManager`, without a CLI configuration
+framework.
+
+Every accepted non-empty batch samples one `std::chrono::steady_clock`
+observation time under the manager mutex and publishes all spans and affected
+lifecycle metadata atomically. Evidence refreshes active traces and reopens
+quiescent traces, including duplicate spans. Empty exports do not refresh any
+trace. Span timestamps and wall-clock time do not determine quiescence.
+
+Lifecycle state is the source of truth. `active_trace_count()`,
+`quiescent_trace_count()`, and `retained_trace_count()` query retained records;
+`lifecycle_counts()` returns all three values coherently under one lock.
+Active count can decrease on quiescence and increase on new or reopened traces.
+Retained count equals active plus quiescent count. Both snapshot APIs continue
+to return owned reconstructions of retained evidence regardless of lifecycle,
+with reconstruction outside the manager lock.
+
+The application explicitly starts one manager-owned lifecycle worker.
+`StartLifecycle()` is one-shot and rejects both double-start and restart after
+stop. `StopLifecycle()` is idempotent, and stopping before the first start does
+not consume it. Destruction stops and joins the worker. Start, stop, and
+destruction are serialized owner-thread operations.
+
+Each sweep samples observation time once under the manager mutex. It makes a
+simple scan of retained records, transitions all active traces satisfying
+`now - last_evidence_time >= quiet_interval`, and computes the nearest remaining
+active deadline. The condition variable waits for that remaining duration, or
+indefinitely when no active traces remain. Non-empty publication and shutdown
+wake it. Every wake rechecks current metadata; a stale deadline cannot make
+freshly appended evidence quiescent. If quiescence commits first, the later
+append reopens the trace atomically.
+
+The injected observation clock uses a narrow function-pointer/context seam.
+Its callback must be monotonic, `noexcept`, non-blocking, and must not re-enter
+the manager; its context must outlive the manager and worker. In deterministic
+tests, fake time controls eligibility rather than the physical condition-variable
+wait. Tests advance time and explicitly wake/acknowledge sweeps through a
+private test peer. No generalized fake scheduler is introduced.
+
+Quiescence does not delete evidence, remove graph contributions, emit dirty
+topology invalidations, advance topology/render versions, or invoke Graphviz.
+The map remains based on all retained traces, and telemetry presence uses
+retained count. Reopening uses the existing evidence invalidation pipeline,
+allowing late parents to resolve gaps and replace topology contributions.
+Runtime status reports active and quiescent counts even without new exports.
+
+Shutdown stops and joins OTLP before stopping/joining lifecycle work, draining
+topology and rendering, stopping HTTP/SSE, and producing final diagnostics and
+artifacts. Shutdown does not force remaining active traces to become quiescent.
+
+V2.3 does not add retention limits, eviction, deletion, persistence, completeness
+inference, a browser lifecycle view, a configuration framework, or a deadline
+heap/timing wheel. Bounded retention and deterministic eviction are V2.4 work.

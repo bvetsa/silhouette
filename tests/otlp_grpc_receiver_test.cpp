@@ -4,6 +4,7 @@
 #include "silhouette/span.h"
 #include "active_trace_manager_test_peer.h"
 #include "local_map_server_test_peer.h"
+#include "trace_lifecycle_test_support.h"
 
 #include <grpcpp/grpcpp.h>
 #include <httplib.h>
@@ -504,12 +505,85 @@ void RejectsDuplicateBind()
     Require(rejected, "second receiver did not report the duplicate-port bind failure");
 }
 
+void RealOtlpQuiescenceAndLateParent()
+{
+    using namespace std::chrono_literals;
+    using silhouette::testing::FakeTraceClock;
+    using silhouette::testing::LifecycleSweepSync;
+    using silhouette::testing::AdvanceAndWakeLifecycle;
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    silhouette::ActiveTraceManager active_traces{1h, FakeTraceClock::Now, &clock};
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    Receiver receiver{kEphemeralAddress, active_traces, &live_map};
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(
+        active_traces, LifecycleSweepSync::Signal, &sweeps);
+    active_traces.StartLifecycle();
+    live_map.Start();
+    Require(live_map.WaitForPublishedAfter(std::nullopt).has_value(),
+            "initial Graphviz SVG was not published");
+    receiver.Start();
+    const auto stub = Connect(receiver);
+
+    otlp::ExportTraceServiceRequest child;
+    AddValidSpan(child, 1, 2, "checkout-child");
+    auto* child_resource = child.mutable_resource_spans(0);
+    auto* attribute = child_resource->mutable_resource()->add_attributes();
+    attribute->set_key("service.name");
+    attribute->mutable_value()->set_string_value("checkout");
+    child_resource->mutable_scope_spans(0)->mutable_spans(0)->set_parent_span_id(
+        MakeIdBytes(silhouette::SpanId::kSize, 1));
+    ExportSuccessfully(*stub, child);
+    const auto first = live_map.WaitForPublishedAfter(0);
+    Require(first && first->has_telemetry && active_traces.active_trace_count() == 1
+                && live_map.SnapshotGraph().gaps.size() == 1,
+            "real child export did not create an active retained gap");
+
+    sweeps.WaitFor(AdvanceAndWakeLifecycle(active_traces, clock, sweeps, 1h));
+    Require(active_traces.quiescent_trace_count() == 1
+                && RetainedSpanCount(active_traces) == 1
+                && live_map.topology_version() == 1
+                && live_map.SnapshotPublished()->svg == first->svg,
+            "real exported trace lost evidence or topology on quiescence");
+    ExportSuccessfully(*stub, {});
+    Require(active_traces.quiescent_trace_count() == 1,
+            "empty real export refreshed quiescent evidence");
+
+    otlp::ExportTraceServiceRequest parent;
+    AddValidSpan(parent, 1, 1, "frontend-parent");
+    attribute = parent.mutable_resource_spans(0)->mutable_resource()
+                    ->add_attributes();
+    attribute->set_key("service.name");
+    attribute->mutable_value()->set_string_value("frontend");
+    ExportSuccessfully(*stub, parent);
+    const auto reopened = live_map.WaitForPublishedAfter(1);
+    receiver.Shutdown();
+    active_traces.StopLifecycle();
+    live_map.CloseAndDrain();
+    const auto graph = live_map.SnapshotGraph();
+    Require(reopened && reopened->has_telemetry && reopened->rendered_version == 2
+                && active_traces.lifecycle_counts()
+                    == silhouette::ActiveTraceManager::LifecycleCounts{1, 0, 1}
+                && RetainedSpanCount(active_traces) == 2
+                && receiver.accepted_request_count() == 3
+                && receiver.accepted_span_count() == 2
+                && graph.gaps.empty()
+                && graph.edges == std::vector<silhouette::ServiceEdge>{
+                    {"frontend", "checkout"}}
+                && graph == silhouette::BuildServiceGraph(active_traces.Snapshot()),
+            "real late-parent export failed reopening, topology, counters, or shutdown");
+}
+
 struct TestCase {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"real_otlp_quiescence_and_late_parent",
+             RealOtlpQuiescenceAndLateParent},
     TestCase{"http_enqueue_failure_does_not_disable_ingestion",
              HttpEnqueueFailureDoesNotDisableIngestion},
     TestCase{"http_worker_startup_failure_does_not_disable_ingestion",

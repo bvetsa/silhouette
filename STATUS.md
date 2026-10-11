@@ -6,6 +6,9 @@ Last updated: 2026-10-10
 
 Silhouette continuously retains accepted OTLP spans in an application-owned
 `ActiveTraceManager` and incrementally maintains the observed service topology.
+Traces become quiescent after 30 seconds without accepted evidence and reopen
+on late evidence. All active and quiescent traces remain retained and contribute
+to topology. Operational finalization does not establish trace completeness.
 Each accepted non-empty export publishes its complete batch, advances counters,
 and then emits sorted unique dirty trace IDs under a narrow publication mutex.
 The graph worker reconstructs only those traces from their latest authoritative
@@ -23,43 +26,43 @@ existing deterministic trace, service graph, DOT, and SVG outputs.
 
 ## Current task
 
-V2.2 event-driven live service-map work is implemented from
-`v2-live-service-graph`, based on merged `main` at `95c7914`. Focused manager,
-incremental-graph, rendering, failure-recovery, HTTP, SSE, and shutdown tests are
-in place. A fresh Debug configure/build (reusing installed vcpkg dependencies
-and the cached pinned protocol source) passed all 87 then-existing CTest cases,
-including localhost gRPC/HTTP integrations. All 19 focused live-map/incremental-graph and
-13 rendering cases pass; twelve concurrency-sensitive live-map cases pass 100
-repeated runs each. A focused real-OTLP smoke check injected a Graphviz failure
-at topology version 1, retained SVG version 0 without automatic retries, then
-published SVG/SSE version 1 on equivalent telemetry. Earlier browser and process
-smoke tests confirmed versions
-`0 -> 1 -> 1 -> 2` and actual Graphviz invocation counts `1 -> 2 -> 2 -> 3`
-for initial, first, equivalent, and changed topology. An occupied map port still
-permits real OTLP ingestion, graceful shutdown, and final DOT/SVG output.
-Subsequent HTTP worker-startup and Windows argument-quoting fixes pass eight
-focused regression checks, with both startup-failure cases passing twenty
-repetitions each. Native Windows process execution has not been tested
-on this macOS host; the portable CRT quoting tests pass here.
-The subsequent HTTP queue-containment fix builds successfully and passes all
-eight focused HTTP/SSE and OTLP failure-isolation checks. Its three new
-admission-failure cases pass twenty repetitions each (60 runs). Whitespace
-checks pass; the full suite and manual browser smoke were not rerun for this
-narrow fix.
-The latest SSE-capacity and latch fixes build successfully and pass all nine
-focused HTTP/SSE and OTLP failure-isolation checks. All three SSE cases pass ten
-repetitions each (30 runs), including graph fetches at the stream-admission limit
-and admission recovery after disconnect. Full-suite and browser checks were not
-repeated for these focused changes. V2.2 and its review fixes belong only on
-`v2-live-service-graph`; `main` must retain the completed V2.1 baseline at
-`95c7914`. Commits are feature-branch only, with no direct V2.2 integration into
-`main` and no pull request opened.
+V2.3 trace quiescence is implemented on `codex/v2-trace-quiescence`, based on
+merged V2.2 `origin/main` at `4995d6a` (PR #8). Changes are local and
+uncommitted, ready for review and integration.
+
+The manager now retains active/quiescent lifecycle state with a 30-second
+production quiet interval, an injected monotonic function-pointer/context clock,
+and one explicitly started deadline worker. Lifecycle counts derive from records
+under the existing mutex. Quiescence preserves evidence and topology; accepted
+late evidence reopens traces. Startup is one-shot, stop is idempotent, and
+shutdown stops the lifecycle worker after OTLP has joined without forcing
+remaining active traces to become quiescent.
+
+The Debug build passes all 110 CTest cases, including real localhost gRPC/HTTP
+and Graphviz integrations. The new real-OTLP test sends a missing-parent child,
+advances fake observation time and explicitly wakes the worker, checks retained
+quiescence without topology churn, sends an empty export, then sends the late
+parent and verifies reopening, gap removal, the confirmed service edge,
+counters, and ordered shutdown. Deterministic manager/live-map tests cover exact
+deadlines, resets, duplicate/empty input, one timestamp per publication/sweep,
+coherent counts, owned snapshots, atomic lifecycle publication, both race orders,
+retained telemetry presence, and idle/deadline worker cleanup.
+
+Eleven concurrency-sensitive manager/live-map cases pass 100 repetitions each
+(1,100 runs). A separate executable acceptance check used the production
+30-second interval and a real external OTLP/gRPC client: the child became
+quiescent, its HTTP SVG remained byte-identical, an empty export left it quiet,
+and a late parent reopened it and replaced the missing-parent gap with the
+confirmed `frontend -> checkout` edge. Ctrl-C returned zero and produced
+inspected DOT/SVG artifacts and both retained spans. Both receiver publication-
+order regressions also pass 100 repetitions each (200 runs). Final diff review
+and whitespace checks pass. No remote V2.3 push or CI result has been verified.
+Native Windows execution remains untested on this macOS host.
 
 ## Next concrete step
 
-Select the next V2 slice explicitly; trace
-quiescence/finalization and bounded retention remain separate from this
-live-map implementation.
+Review and integrate V2.3. Define the bounded retention and deterministic
+eviction policy separately for V2.4.
 
 ## Accepted decisions
 
@@ -70,6 +73,10 @@ live-map implementation.
 - Integration target: a completely separate existing instrumented application, used for manual testing only.
 - V1 lifecycle: finite in-memory capture stopped with Ctrl-C, followed by batch processing.
 - V2.1 lifecycle: continuously inspectable active traces with no finalization or eviction yet.
+- V2.3 lifecycle: active/quiescent state is the source of truth; derive counts coherently under the manager mutex without cached lifecycle counters. Every non-empty accepted batch refreshes affected traces, including duplicates; empty exports do nothing.
+- Quiescence timing: use one steady-clock observation time per publication and per sweep. Clock callbacks are monotonic, noexcept, non-blocking, non-reentrant, and their contexts outlive the manager and worker.
+- Lifecycle worker: one manager-owned worker waits for the nearest remaining duration, or indefinitely without active traces. Recheck current metadata on every wake. Start is one-shot; stop-before-start does not consume it, repeated stop is harmless, and destruction joins the worker. Fake-clock tests explicitly wake and acknowledge sweeps rather than relying on physical waiting.
+- Retained lifecycle: snapshots include active and quiescent traces, and retained count equals active plus quiescent. Quiescence does not notify topology or render; retained count drives telemetry presence.
 - V2.2 update semantics: dirty trace IDs are latest-state invalidations, not immutable export snapshots; normal topology work reconstructs only affected traces.
 - Incremental topology: store one `ServiceGraph` contribution per trace and maintain deterministic service, edge, and gap reference counts; `ReplaceAll()` is failure recovery only.
 - Incremental-update exception safety: preparation failure preserves the observable graph returned by snapshots; invisible empty or zero-count bookkeeping entries may remain.
@@ -79,7 +86,7 @@ live-map implementation.
 - Live rendering: use private temporary DOT/SVG files and publish owned SVG bytes without mutating final `silhouette.dot` or `silhouette.svg` artifacts.
 - Local presentation: serve embedded HTML/CSS/JavaScript, SVG, and server-sent events on `127.0.0.1:8008` through cpp-httplib; idle SSE streams use comment heartbeats to detect disconnected clients without browser polling. Limit active SSE streams below the fixed worker count to retain HTTP fetch capacity; excess streams receive a closed HTTP 503 response, and RAII releases admission slots on disconnect, shutdown, or failure.
 - Failure isolation: dirty-notification failure requests a conservative full resync; graph, renderer, HTTP, and SSE failures must not reject accepted telemetry or terminate ingestion. HTTP startup waits for fixed-size worker-pool readiness and reports failures to the caller after closing its socket and joining the listener. Request-admission allocation failures reject only the unaccepted connection; queue teardown wakes SSE and joins workers even during listener unwinding.
-- Shutdown order: stop and join OTLP, close and drain invalidations, render the newest topology, stop HTTP/SSE, then run the final V1 artifact path.
+- Shutdown order: stop and join OTLP, stop and join lifecycle work without forcing quiescence, close and drain invalidations, render the newest topology, stop HTTP/SSE, then run the final V1 artifact path.
 - V1 output: textual trace diagnostics plus a simple DOT/static visual service map.
 - V1 robustness: tolerate and explicitly mark incomplete telemetry; do not attempt speculative relationship recovery.
 - Test strategy: synthetic deterministic algorithm tests plus manual real-OTLP integration.
@@ -130,9 +137,9 @@ An open decision is not permission for an agent to choose silently. Present opti
 ## Known issues
 
 No known conversion, receiver, trace-reconstruction, service-aggregation, or
-incremental-topology correctness issues. V2.2 intentionally retains every
-observed trace and contribution for the process lifetime; quiescence,
-finalization, and bounded eviction are not implemented. Each published live
+incremental-topology correctness issues. V2.3 intentionally retains every
+observed trace and contribution for the process lifetime, including quiescent
+traces. Bounded retention and eviction are not implemented. Each published live
 frame still requires a full Graphviz layout, although obsolete pending frames
 are coalesced. The live server is fixed to loopback port 8008 and has no stable
 configuration interface. SVG generation requires external Graphviz on `PATH`;
@@ -141,6 +148,16 @@ public contracts. A failed live render retains the last valid SVG and waits for
 new telemetry to retry; there is no timer or automatic retry loop.
 
 ## Latest work
+
+- Added V2.3 active/quiescent lifecycle state, monotonic observation-time injection,
+  derived coherent counts, and a one-shot manager-owned deadline worker.
+- Preserved atomic publication and owned snapshots; late evidence reopens traces
+  through the existing topology pipeline, while lifecycle-only transitions do
+  not invalidate topology or render. Telemetry presence now uses retained count.
+- Added deterministic deadline, count, snapshot, race, and shutdown coverage,
+  plus real OTLP/gRPC and Graphviz reopening integration.
+- Updated application status and shutdown ordering and documented the V2.3
+  contract while keeping bounded retention and eviction separate.
 
 - Reserved HTTP capacity by limiting persistent SSE admission; covered a full
   stream quota while page and updated SVG requests still complete, rejection of
@@ -276,7 +293,7 @@ new telemetry to retry; there is no timer or automatic retry loop.
 
 ## Deferred work
 
-Trace quiescence/finalization, bounded retention and eviction, persistence,
+Bounded retention and eviction, persistence,
 request playback, incremental Graphviz layout, configurable networking, and a
-larger browser interface remain deferred beyond V2.2. Candidate later
+larger browser interface remain deferred beyond V2.3. Candidate later
 directions remain listed in `ROADMAP.md`.

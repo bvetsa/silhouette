@@ -127,6 +127,7 @@ add_library(silhouette_core
 target_compile_features(silhouette_core PUBLIC cxx_std_20)
 set_target_properties(silhouette_core PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(silhouette_core PUBLIC include)
+target_link_libraries(silhouette_core PRIVATE Threads::Threads)
 silhouette_enable_warnings(silhouette_core)
 
 add_library(silhouette_rendering

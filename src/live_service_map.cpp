@@ -217,7 +217,7 @@ void LiveServiceMap::GraphWorker()
             }
 
             PublishTopology(
-                graph_.Snapshot(), active_traces_.active_trace_count() > 0);
+                graph_.Snapshot(), active_traces_.retained_trace_count() > 0);
             if (after_topology_update_hook_) {
                 after_topology_update_hook_(after_topology_update_context_);
             }
