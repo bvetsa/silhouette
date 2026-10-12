@@ -13,6 +13,10 @@ namespace grpc {
 class Server;
 }
 
+namespace silhouette::testing {
+class OtlpGrpcReceiverTestPeer;
+}
+
 namespace silhouette::ingestion {
 
 class OtlpGrpcReceiver final {
@@ -41,6 +45,7 @@ public:
     [[nodiscard]] std::uint64_t accepted_span_count() const noexcept;
 
 private:
+    friend class silhouette::testing::OtlpGrpcReceiverTestPeer;
     class TraceService;
 
     enum class State {
@@ -59,6 +64,8 @@ private:
     std::mutex publication_mutex_;
     int selected_port_{0};
     State state_{State::not_started};
+    void (*before_response_prepare_hook_)(void*){nullptr};
+    void* before_response_prepare_context_{nullptr};
 };
 
 } // namespace silhouette::ingestion

@@ -7,10 +7,16 @@
 #include <opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h>
 
 #include <cstdint>
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <charconv>
+#include <limits>
 #include <new>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace silhouette::ingestion {
@@ -23,12 +29,15 @@ public:
                  TraceUpdateSink* update_sink,
                  std::atomic<std::uint64_t>& accepted_request_count,
                  std::atomic<std::uint64_t>& accepted_span_count,
-                 std::mutex& publication_mutex)
+                 std::mutex& publication_mutex,
+                 void (*before_response_prepare)(void*), void* prepare_context)
         : active_traces_{active_traces}
         , update_sink_{update_sink}
         , accepted_request_count_{accepted_request_count}
         , accepted_span_count_{accepted_span_count}
         , publication_mutex_{publication_mutex}
+        , before_response_prepare_{before_response_prepare}
+        , prepare_context_{prepare_context}
     {
     }
 
@@ -39,28 +48,69 @@ public:
     {
         try {
             auto conversion = detail::ConvertOtlpSpans(*request);
-            const auto accepted_span_count =
-                static_cast<std::uint64_t>(conversion.spans.size());
-
-            if (conversion.rejected_span_count > 0) {
-                auto* partial_success = response->mutable_partial_success();
-                partial_success->set_rejected_spans(
-                    conversion.rejected_span_count);
-                partial_success->set_error_message(
-                    "Silhouette rejected spans with an invalid trace, span, "
-                    "or parent span ID.");
+            if (before_response_prepare_) {
+                before_response_prepare_(prepare_context_);
             }
+            // Prepare the protobuf object AND its string storage before any
+            // admission. The longest fixed text plus two 64-bit decimal counts
+            // fits within 256 bytes; formatting below uses only this buffer.
+            constexpr std::size_t kMessageCapacity = 256;
+            constexpr std::string_view kPrefix = "Silhouette rejected ";
+            constexpr std::string_view kInvalid = " span(s) with invalid identifiers";
+            constexpr std::string_view kAnd = " and ";
+            constexpr std::string_view kCapacity =
+                " span(s) because a retained trace would exceed its span limit";
+            constexpr auto kDigits = std::max(std::numeric_limits<std::size_t>::digits10,
+                                              std::numeric_limits<std::int64_t>::digits10) + 1;
+            static_assert(kPrefix.size() + kInvalid.size() + kAnd.size()
+                              + kCapacity.size() + 2 * kDigits + 1 <= kMessageCapacity);
+            auto* partial = response->mutable_partial_success();
+            auto* message = partial->mutable_error_message();
+            message->reserve(kMessageCapacity);
 
             {
                 std::scoped_lock publication_lock{publication_mutex_};
-                auto affected_trace_ids =
+                auto result =
                     active_traces_.AppendBatch(std::move(conversion.spans));
+                const auto invalid = conversion.rejected_span_count;
+                const auto capacity = result.capacity_rejected_span_count;
+                if (invalid != 0 || capacity != 0) {
+                    std::array<char, kMessageCapacity> buffer{};
+                    auto* cursor = buffer.data();
+                    const auto text = [&](const std::string_view value) {
+                        cursor = std::copy(value.begin(), value.end(), cursor);
+                    };
+                    const auto count = [&](const auto value) {
+                        const auto formatted = std::to_chars(
+                            cursor, buffer.data() + buffer.size(), value);
+                        assert(formatted.ec == std::errc{});
+                        cursor = formatted.ptr;
+                    };
+                    text(kPrefix);
+                    if (invalid != 0) {
+                        count(invalid);
+                        text(kInvalid);
+                        if (capacity != 0) {
+                            text(kAnd);
+                        }
+                    }
+                    if (capacity != 0) {
+                        count(capacity);
+                        text(kCapacity);
+                    }
+                    text(".");
+                    partial->set_rejected_spans(
+                        invalid + static_cast<std::int64_t>(capacity));
+                    message->assign(buffer.data(), static_cast<std::size_t>(cursor - buffer.data()));
+                } else {
+                    response->clear_partial_success();
+                }
                 accepted_span_count_.fetch_add(
-                    accepted_span_count, std::memory_order_relaxed);
+                    result.accepted_span_count, std::memory_order_relaxed);
                 accepted_request_count_.fetch_add(1, std::memory_order_relaxed);
-                if (update_sink_ != nullptr && !affected_trace_ids.empty()) {
+                if (update_sink_ != nullptr && !result.affected_trace_ids.empty()) {
                     update_sink_->NotifyTracesDirty(
-                        std::move(affected_trace_ids));
+                        std::move(result.affected_trace_ids));
                 }
             }
 
@@ -80,6 +130,8 @@ private:
     std::atomic<std::uint64_t>& accepted_request_count_;
     std::atomic<std::uint64_t>& accepted_span_count_;
     std::mutex& publication_mutex_;
+    void (*before_response_prepare_)(void*);
+    void* prepare_context_;
 };
 
 OtlpGrpcReceiver::OtlpGrpcReceiver(
@@ -108,7 +160,8 @@ void OtlpGrpcReceiver::Start()
 
     auto service = std::make_unique<TraceService>(
         active_traces_, update_sink_, accepted_request_count_,
-        accepted_span_count_, publication_mutex_);
+        accepted_span_count_, publication_mutex_, before_response_prepare_hook_,
+        before_response_prepare_context_);
 
     grpc::ServerBuilder builder;
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);

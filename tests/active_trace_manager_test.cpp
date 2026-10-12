@@ -11,6 +11,7 @@
 #include <iostream>
 #include <latch>
 #include <optional>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -224,20 +225,20 @@ void ActiveTraceCountTracksDistinctIds()
 void AppendBatchReturnsSortedUniqueAffectedTraceIds()
 {
     ActiveTraceManager manager;
-    const auto affected = manager.AppendBatch({
+    const auto result = manager.AppendBatch({
         MakeSpan(3, 1, "three"),
         MakeSpan(1, 1, "one"),
         MakeSpan(3, 2, "three-again"),
         MakeSpan(2, 1, "two"),
     });
 
-    Require(affected == std::vector<TraceId>{
+    Require(result.affected_trace_ids == std::vector<TraceId>{
                             MakeTraceId(1),
                             MakeTraceId(2),
                             MakeTraceId(3),
                         },
             "append did not return sorted unique affected trace IDs");
-    Require(manager.AppendBatch({}).empty(),
+    Require(manager.AppendBatch({}).affected_trace_ids.empty(),
             "empty append reported affected trace IDs");
 }
 
@@ -427,12 +428,20 @@ void RejectsInvalidLifecycleConfiguration()
         rejected = true;
     }
     Require(rejected, "null observation clock was accepted");
+    for (const auto limits : {silhouette::TraceRetentionLimits{.max_quiescent_age = 0s},
+                              silhouette::TraceRetentionLimits{.max_spans_per_trace = 0}}) {
+        rejected = false;
+        try { ActiveTraceManager manager{10s, limits}; }
+        catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected, "invalid retention age or span limit was accepted");
+    }
+
 }
 
 void ExactDeadlinePreservesAllSnapshots()
 {
     FakeTraceClock clock;
-    ActiveTraceManager manager{10s, FakeTraceClock::Now, &clock};
+    ActiveTraceManager manager{10s, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     manager.AppendBatch({MakeSpan(1, 1, "root")});
     const auto original = manager.Snapshot();
     const auto original_text = FormatReconstructedTraces(original);
@@ -442,7 +451,7 @@ void ExactDeadlinePreservesAllSnapshots()
             "trace became quiet before its exact deadline");
     RequireCounts(manager, 1, 0);
     clock.Advance(1ns);
-    Require(!ActiveTraceManagerTestPeer::SweepLifecycle(manager),
+    Require(ActiveTraceManagerTestPeer::SweepLifecycle(manager) == 24h - 10s,
             "quiescent trace retained an active deadline");
     RequireCounts(manager, 0, 1);
     const std::array ids{MakeTraceId(1), MakeTraceId(1), MakeTraceId(9)};
@@ -487,7 +496,7 @@ void DuplicateRefreshesAndEmptyBatchDoesNothing()
             "duplicate arrival did not refresh the quiet deadline");
     clock.Advance(5s);
     const auto samples = clock.samples();
-    Require(manager.AppendBatch({}).empty() && clock.samples() == samples,
+    Require(manager.AppendBatch({}).affected_trace_ids.empty() && clock.samples() == samples,
             "empty publication sampled time or reported affected traces");
     clock.Advance(4s);
     static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
@@ -575,7 +584,7 @@ void WorkerWakesForPublicationAndFakeTime()
 {
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
-    ActiveTraceManager manager{1h, FakeTraceClock::Now, &clock};
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     ActiveTraceManagerTestPeer::SetAfterSweepHook(
         manager, LifecycleSweepSync::Signal, &sweeps);
     manager.StartLifecycle();
@@ -612,7 +621,7 @@ void AppendWinsAgainstStaleDeadlineWake()
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
     PauseNextSweep pause;
-    ActiveTraceManager manager{1h, FakeTraceClock::Now, &clock};
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     manager.AppendBatch({MakeSpan(1, 1, "root")});
     ActiveTraceManagerTestPeer::SetBeforeSweepLockHook(
         manager, PauseNextSweep::Pause, &pause);
@@ -640,7 +649,7 @@ void QuiescenceWinsThenAppendReopens()
 {
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
-    ActiveTraceManager manager{1h, FakeTraceClock::Now, &clock};
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     manager.AppendBatch({MakeSpan(1, 1, "root")});
     ActiveTraceManagerTestPeer::SetAfterSweepHook(
         manager, LifecycleSweepSync::Signal, &sweeps);
@@ -684,7 +693,7 @@ void StopWhileWaitingPreservesActiveEvidence()
 {
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
-    ActiveTraceManager manager{1h, FakeTraceClock::Now, &clock};
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     manager.AppendBatch({MakeSpan(1, 1, "root")});
     ActiveTraceManagerTestPeer::SetAfterSweepHook(
         manager, LifecycleSweepSync::Signal, &sweeps);
@@ -701,7 +710,7 @@ void DestructorJoinsIdleAndDeadlineWorkers()
     FakeTraceClock clock;
     for (const bool with_evidence : {false, true}) {
         LifecycleSweepSync sweeps;
-        ActiveTraceManager manager{1h, FakeTraceClock::Now, &clock};
+        ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
         if (with_evidence) {
             manager.AppendBatch({MakeSpan(1, 1, "root")});
         }
@@ -713,12 +722,245 @@ void DestructorJoinsIdleAndDeadlineWorkers()
     }
 }
 
+
+void CapacityAdmissionIsPerTraceAndRejectedEvidenceIsUnchanged()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{10s, silhouette::TraceRetentionLimits{
+        .max_spans_per_trace = 3}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "root"), MakeSpan(1, 2, "child", 1)});
+    clock.Advance(9s);
+    const auto result = manager.AppendBatch({MakeSpan(1, 3, "too-many"),
+        MakeSpan(1, 4, "too-many"), MakeSpan(2, 1, "sibling")});
+    Require(result.accepted_span_count == 1 && result.capacity_rejected_span_count == 2
+                && result.affected_trace_ids == std::vector<TraceId>{MakeTraceId(2)},
+            "capacity rejection did not preserve the complete sibling contribution");
+    clock.Advance(1s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
+    RequireCounts(manager, 1, 1);
+    const auto smaller = manager.AppendBatch({MakeSpan(1, 1, "duplicate")});
+    Require(smaller.accepted_span_count == 1 && smaller.capacity_rejected_span_count == 0,
+            "smaller fitting contribution failed after an earlier capacity rejection");
+    RequireCounts(manager, 2, 0);
+    const auto samples = clock.samples();
+    const auto full = manager.AppendBatch({MakeSpan(1, 5, "full")});
+    Require(full.accepted_span_count == 0 && full.capacity_rejected_span_count == 1
+                && full.affected_trace_ids.empty() && clock.samples() == samples,
+            "fully rejected contribution refreshed lifecycle or reported changes");
+    const auto oversized = manager.AppendBatch({MakeSpan(3, 1, "a"),
+        MakeSpan(3, 2, "b"), MakeSpan(3, 3, "c"), MakeSpan(3, 4, "d")});
+    Require(oversized.capacity_rejected_span_count == 4
+                && manager.retained_trace_count() == 2
+                && RetainedSpanCount(manager.Snapshot()) == 4,
+            "oversized new trace created a record or truncated its incoming batch");
+}
+
+void AgeExpiryIsInclusiveAndLookupsOwnEarlierEvidence()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{2s, silhouette::TraceRetentionLimits{
+        .max_quiescent_age = 10s}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "first")});
+    clock.Advance(3s);
+    manager.AppendBatch({MakeSpan(2, 1, "second")});
+    const std::array ids{MakeTraceId(2), MakeTraceId(1), MakeTraceId(9), MakeTraceId(1)};
+    const auto samples = clock.samples();
+    const auto owned = manager.LookupTraces(ids);
+    Require(owned.size() == 3 && owned[0].trace && owned[1].trace && !owned[2].trace
+                && clock.samples() == samples,
+            "lookup lost requested absence, ordering, ownership, or refreshed retention");
+    clock.Advance(7s - 1ns);
+    Require(ActiveTraceManagerTestPeer::SweepLifecycle(manager) == 1ns,
+            "age expiry occurred before its inclusive boundary");
+    RequireCounts(manager, 0, 2);
+    clock.Advance(1ns);
+    Require(ActiveTraceManagerTestPeer::SweepLifecycle(manager) == 3s,
+            "next age deadline ignored a remaining quiescent trace");
+    RequireCounts(manager, 0, 1);
+    const auto current = manager.LookupTraces(ids);
+    Require(!current[0].trace && current[1].trace && !current[2].trace
+                && owned[0].trace->spans.size() == 1
+                && manager.SnapshotTraces(ids).size() == 1,
+            "eviction invalidated owned evidence or changed existing snapshot semantics");
+    clock.Advance(3s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
+    RequireCounts(manager, 0, 0);
+    manager.AppendBatch({MakeSpan(1, 2, "fresh-orphan", 1)});
+    const auto fresh = manager.Snapshot();
+    Require(fresh.size() == 1 && fresh[0].spans.size() == 1
+                && fresh[0].spans[0].parent_resolution == ParentResolution::missing,
+            "reappearing ID recovered forgotten history or lost its uncertainty");
+}
+
+void CountEvictionUsesEvidenceAgeAndTraceIdTies()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{2s, silhouette::TraceRetentionLimits{
+        .max_quiescent_traces = 1, .max_quiescent_age = 10s}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(3, 1, "three"), MakeSpan(1, 1, "one")});
+    clock.Advance(1s);
+    manager.AppendBatch({MakeSpan(2, 1, "two")});
+    clock.Advance(1s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
+    RequireCounts(manager, 1, 1);
+    const std::array ids{MakeTraceId(1), MakeTraceId(2), MakeTraceId(3)};
+    auto lookups = manager.LookupTraces(ids);
+    Require(!lookups[0].trace && lookups[1].trace && lookups[2].trace,
+            "equal-time count victims did not use lexicographic TraceId");
+    clock.Advance(1s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
+    RequireCounts(manager, 0, 1);
+    lookups = manager.LookupTraces(ids);
+    Require(!lookups[0].trace && lookups[1].trace && !lookups[2].trace,
+            "count enforcement did not evict the oldest last accepted evidence");
+}
+
+void ZeroCapacityAndAgeNeverEvictActiveTraces()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{
+        .max_quiescent_traces = 0, .max_quiescent_age = 10s}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "active")});
+    clock.Advance(10s);
+    Require(ActiveTraceManagerTestPeer::SweepLifecycle(manager) == 1h - 10s,
+            "active trace incorrectly acquired an age-eviction deadline");
+    RequireCounts(manager, 1, 0);
+    clock.Advance(1h - 10s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(manager));
+    RequireCounts(manager, 0, 0);
+    Require(manager.Snapshot().empty(), "zero capacity retained quiescent evidence");
+}
+
+struct RetentionPreparationFailure final {
+    std::atomic<bool> fail{true};
+    static void Prepare(void* context)
+    {
+        if (static_cast<RetentionPreparationFailure*>(context)->fail.load()) {
+            throw std::bad_alloc{};
+        }
+    }
+};
+
+void FailedSweepCommitsNothingAndWorkerRecovers()
+{
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    RetentionPreparationFailure failure;
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{
+        .max_quiescent_traces = 0, .max_quiescent_age = 2h}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "root")});
+    clock.Advance(1h);
+    ActiveTraceManagerTestPeer::SetBeforeRetentionCommitHook(
+        manager, RetentionPreparationFailure::Prepare, &failure);
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(manager, LifecycleSweepSync::Signal, &sweeps);
+    manager.StartLifecycle();
+    sweeps.WaitFor(1);
+    RequireCounts(manager, 1, 0);
+    Require(RetainedSpanCount(manager.Snapshot()) == 1,
+            "failed sweep partially quiesced or evicted evidence");
+    failure.fail = false;
+    sweeps.WaitFor(AdvanceAndWakeLifecycle(manager, clock, sweeps, 0s));
+    manager.StopLifecycle();
+    RequireCounts(manager, 0, 0);
+}
+
+void AppendWinsAgainstAnEvictionDeadline()
+{
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    PauseNextSweep pause;
+    ActiveTraceManager manager{1h, silhouette::TraceRetentionLimits{
+        .max_quiescent_traces = 0, .max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "root")});
+    ActiveTraceManagerTestPeer::SetBeforeSweepLockHook(manager, PauseNextSweep::Pause, &pause);
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(manager, LifecycleSweepSync::Signal, &sweeps);
+    manager.StartLifecycle();
+    sweeps.WaitFor(1);
+    pause.armed = true;
+    const auto ack = AdvanceAndWakeLifecycle(manager, clock, sweeps, 1h);
+    pause.paused.wait();
+    manager.AppendBatch({MakeSpan(1, 2, "new", 1)});
+    pause.release.count_down();
+    sweeps.WaitFor(ack);
+    manager.StopLifecycle();
+    RequireCounts(manager, 1, 0);
+    Require(RetainedSpanCount(manager.Snapshot()) == 2,
+            "stale sweep evicted a refreshed trace");
+}
+
+
+void ConcurrentAdmittedSubsetPublishesAtomically()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{10s, {.max_spans_per_trace = 2}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "a"), MakeSpan(1, 2, "b")});
+    AtomicPublicationSync sync;
+    ActiveTraceManagerTestPeer::SetBeforeCommitHook(manager, PauseAppendBeforeCommit, &sync);
+    std::vector<ReconstructedTrace> observed;
+    silhouette::AppendResult result;
+    std::thread writer{[&] {
+        result = manager.AppendBatch({MakeSpan(1, 3, "rejected"),
+            MakeSpan(2, 1, "accepted-two"), MakeSpan(3, 1, "accepted-three")});
+    }};
+    sync.append_holds_lock.wait();
+    std::thread reader{[&] {
+        observed = ActiveTraceManagerTestPeer::SnapshotWithBeforeLock(
+            manager, SignalSnapshotAttempt, &sync);
+    }};
+    writer.join(); reader.join();
+    Require(observed.size() == 3 && RetainedSpanCount(observed) == 4
+                && result.accepted_span_count == 2 && result.capacity_rejected_span_count == 1
+                && result.affected_trace_ids == std::vector<TraceId>{MakeTraceId(2), MakeTraceId(3)},
+            "capacity filtering caused partial admitted-subset publication");
+}
+
+
+void ConcurrentWritersCannotExceedTraceCapacity()
+{
+    FakeTraceClock clock;
+    ActiveTraceManager manager{10s, {.max_spans_per_trace = 3}, FakeTraceClock::Now, &clock};
+    manager.AppendBatch({MakeSpan(1, 1, "a"), MakeSpan(1, 2, "b")});
+    std::latch ready{2};
+    std::latch start{1};
+    std::array<silhouette::AppendResult, 2> results;
+    std::array<std::thread, 2> writers;
+    for (std::size_t i = 0; i < writers.size(); ++i) {
+        writers[i] = std::thread{[&, i] {
+            ready.count_down(); start.wait();
+            results[i] = manager.AppendBatch({MakeSpan(1, static_cast<std::uint8_t>(3 + i), "one-slot")});
+        }};
+    }
+    ready.wait(); start.count_down();
+    for (auto& writer : writers) writer.join();
+    Require(results[0].accepted_span_count + results[1].accepted_span_count == 1
+                && results[0].capacity_rejected_span_count + results[1].capacity_rejected_span_count == 1
+                && RetainedSpanCount(manager.Snapshot()) == 3 && clock.samples() == 2,
+            "concurrent writers over-admitted the last trace slot or refreshed rejected evidence");
+}
+
 struct TestCase {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"concurrent_writers_obey_capacity",
+             ConcurrentWritersCannotExceedTraceCapacity},
+    TestCase{"concurrent_admitted_subset_is_atomic",
+             ConcurrentAdmittedSubsetPublishesAtomically},
+    TestCase{"capacity_admission_is_per_trace",
+             CapacityAdmissionIsPerTraceAndRejectedEvidenceIsUnchanged},
+    TestCase{"age_expiry_is_inclusive_and_lookup_is_owned",
+             AgeExpiryIsInclusiveAndLookupsOwnEarlierEvidence},
+    TestCase{"count_eviction_uses_evidence_age_and_id_ties",
+             CountEvictionUsesEvidenceAgeAndTraceIdTies},
+    TestCase{"zero_capacity_never_evicts_active_traces",
+             ZeroCapacityAndAgeNeverEvictActiveTraces},
+    TestCase{"failed_sweep_commits_nothing_and_worker_recovers",
+             FailedSweepCommitsNothingAndWorkerRecovers},
+    TestCase{"append_wins_against_eviction_deadline",
+             AppendWinsAgainstAnEvictionDeadline},
+
     TestCase{"rejects_invalid_lifecycle_configuration",
              RejectsInvalidLifecycleConfiguration},
     TestCase{"exact_deadline_preserves_all_snapshots",

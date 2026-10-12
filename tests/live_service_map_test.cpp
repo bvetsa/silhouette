@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -194,7 +195,7 @@ void DirtyTraceUpdatesPublishLatestTopology()
         MakeSpan(1, 1, "frontend"),
         MakeSpan(1, 2, "checkout", 1),
     });
-    live_map.NotifyTracesDirty(std::move(affected));
+    live_map.NotifyTracesDirty(std::move(affected.affected_trace_ids));
 
     const auto updated = live_map.WaitForPublishedAfter(
         initial->rendered_version);
@@ -247,12 +248,12 @@ void DirtyTraceReconstructsNewestAuthoritativeState()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     sync.target_started.wait();
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
-    }));
+    }).affected_trace_ids);
     sync.release_target.count_down();
     live_map.CloseAndDrain();
 
@@ -290,13 +291,13 @@ void StaleRenderIsDiscardedInFavorOfNewestVersion()
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     stale_render_started.wait();
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "checkout"),
         MakeSpan(2, 2, "database", 1),
-    }));
+    }).affected_trace_ids);
     LiveServiceMapTestPeer::WaitForTopologyVersion(live_map, 2);
     release_stale_render.count_down();
 
@@ -325,7 +326,7 @@ void RenderFailurePreservesLastPublishedSvg()
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     renderer.WaitForCompleted(2);
 
     const auto after_failure = live_map.SnapshotPublished();
@@ -336,7 +337,7 @@ void RenderFailurePreservesLastPublishedSvg()
             "failed render replaced the last valid published SVG");
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 3, "database", 2),
-    }));
+    }).affected_trace_ids);
     const auto recovered = live_map.WaitForPublishedAfter(
         initial->rendered_version);
     Require(recovered.has_value() && recovered->rendered_version == 2,
@@ -377,7 +378,7 @@ void DirtyInsertionFailureFallsBackToFullResync(const bool before_insertion)
         MakeSpan(2, 1, "checkout"),
         MakeSpan(2, 2, "database", 1),
     });
-    live_map.NotifyTracesDirty(std::move(affected));
+    live_map.NotifyTracesDirty(std::move(affected.affected_trace_ids));
 
     const auto recovered = live_map.WaitForPublishedAfter(
         initial->rendered_version);
@@ -414,7 +415,7 @@ void ShutdownDrainsFinalDirtyTopologyAndRender()
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     live_map.CloseAndDrain();
 
     const auto final = live_map.SnapshotPublished();
@@ -442,19 +443,19 @@ void ShutdownDrainsPendingCoalescedWork()
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     stale_render_started.wait();
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "checkout"),
         MakeSpan(2, 2, "database", 1),
-    }));
+    }).affected_trace_ids);
     LiveServiceMapTestPeer::WaitForTopologyVersion(live_map, 2);
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(3, 1, "database"),
         MakeSpan(3, 2, "cache", 1),
-    }));
+    }).affected_trace_ids);
     graph_sync.target_started.wait();
 
     std::thread shutdown{[&] { live_map.CloseAndDrain(); }};
@@ -521,7 +522,7 @@ void EquivalentTelemetryRetriesFailedCurrentRender()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     // This hook fires only once the failed attempt is consumed and the worker
     // has no pending render request. No elapsed-time guess establishes idleness.
     idle_sync.WaitFor(2);
@@ -533,7 +534,7 @@ void EquivalentTelemetryRetriesFailedCurrentRender()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     graph_sync.WaitFor(2);
     // The same publication wait used by SSE must observe the retried version.
     // The timeout is only a failure bound, not a concurrency-ordering mechanism.
@@ -574,11 +575,11 @@ void EquivalentTelemetryDuringSuccessfulRenderDoesNotRenderAgain()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     render_started.wait();
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     graph_sync.WaitFor(2);
     release_render.count_down();
     const auto published = live_map.WaitForPublishedAfter(0);
@@ -631,7 +632,7 @@ void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     sync.WaitFor(1);
     const auto first = live_map.WaitForPublishedAfter(0);
     Require(first && first->rendered_version == 1,
@@ -640,7 +641,7 @@ void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
     // A second contributor to the same edge must be retained without rendering.
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     sync.WaitFor(2);
     Require(live_map.topology_version() == 1
                 && renderer.RenderedGraphs().size() == 2,
@@ -649,7 +650,7 @@ void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
     // Same-service evidence updates the trace but leaves topology unchanged.
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 3, "checkout", 2),
-    }));
+    }).affected_trace_ids);
     sync.WaitFor(3);
     Require(live_map.topology_version() == 1
                 && renderer.RenderedGraphs().size() == 2,
@@ -664,7 +665,7 @@ void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
     // Ambiguity removes trace one's edge contribution; trace two still owns it.
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
-    }));
+    }).affected_trace_ids);
     sync.WaitFor(4);
     const auto revised = live_map.WaitForPublishedAfter(1);
     Require(revised && revised->rendered_version == 2,
@@ -675,7 +676,7 @@ void EquivalentEvidenceSuppressesRendersAndPreservesContributions()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(2, 1, "frontend"),
-    }));
+    }).affected_trace_ids);
     sync.WaitFor(5);
     const auto final = live_map.WaitForPublishedAfter(2);
     Require(final && final->rendered_version == 3,
@@ -719,7 +720,7 @@ void QuiescencePreservesTopologyVersionsAndTelemetry()
     LifecycleSweepSync sweeps;
     TopologyUpdateSync updates;
     ActiveTraceManager active_traces{
-        std::chrono::hours{1}, FakeTraceClock::Now, &clock};
+        std::chrono::hours{1}, silhouette::TraceRetentionLimits{.max_quiescent_age = std::chrono::hours{24}}, FakeTraceClock::Now, &clock};
     RecordingRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
@@ -733,7 +734,7 @@ void QuiescencePreservesTopologyVersionsAndTelemetry()
             "initial map was not published");
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     const auto first = live_map.WaitForPublishedAfter(0);
     Require(first && first->has_telemetry, "first topology lacked telemetry");
     updates.WaitFor(1);
@@ -769,7 +770,7 @@ void LateParentReopensQuiescentTraceAndReplacesGap()
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
     ActiveTraceManager active_traces{
-        std::chrono::hours{1}, FakeTraceClock::Now, &clock};
+        std::chrono::hours{1}, silhouette::TraceRetentionLimits{.max_quiescent_age = std::chrono::hours{24}}, FakeTraceClock::Now, &clock};
     RecordingRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
@@ -781,7 +782,7 @@ void LateParentReopensQuiescentTraceAndReplacesGap()
             "initial map was not published");
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     Require(live_map.WaitForPublishedAfter(0).has_value()
                 && live_map.SnapshotGraph().gaps.size() == 1,
             "initial missing-parent gap was not published");
@@ -793,7 +794,7 @@ void LateParentReopensQuiescentTraceAndReplacesGap()
             "quiescence altered the retained gap presentation");
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, 1, "frontend"),
-    }));
+    }).affected_trace_ids);
     const auto reopened = live_map.WaitForPublishedAfter(1);
     active_traces.StopLifecycle();
     live_map.CloseAndDrain();
@@ -810,12 +811,230 @@ void LateParentReopensQuiescentTraceAndReplacesGap()
             "late parent failed to reopen the retained trace and replace its gap");
 }
 
+
+struct RetentionMapFixture final {
+    FakeTraceClock clock;
+    LifecycleSweepSync sweeps;
+    ActiveTraceManager traces;
+    RecordingRenderer renderer;
+    std::ostringstream diagnostics;
+    LiveServiceMap map{traces, renderer, diagnostics};
+
+    RetentionMapFixture(const std::chrono::steady_clock::duration quiet,
+                        const silhouette::TraceRetentionLimits limits)
+        : traces{quiet, limits, FakeTraceClock::Now, &clock}
+    {
+        ActiveTraceManagerTestPeer::SetAfterSweepHook(
+            traces, LifecycleSweepSync::Signal, &sweeps);
+    }
+    ~RetentionMapFixture()
+    {
+        traces.StopLifecycle();
+        map.CloseAndDrain();
+    }
+    void Start()
+    {
+        traces.StartLifecycle(&map);
+        map.Start();
+        Require(map.WaitForPublishedAfter(std::nullopt).has_value(), "initial map missing");
+    }
+    void Append(std::vector<Span> spans)
+    {
+        map.NotifyTracesDirty(traces.AppendBatch(std::move(spans)).affected_trace_ids);
+    }
+    void Advance(const std::chrono::steady_clock::duration amount)
+    {
+        sweeps.WaitFor(AdvanceAndWakeLifecycle(traces, clock, sweeps, amount));
+    }
+};
+
+struct RetentionPause final {
+    std::atomic<bool> armed{true};
+    std::atomic<bool> released{false};
+    std::latch paused{1};
+    std::latch release{1};
+    static void Pause(void* context) noexcept
+    {
+        auto& sync = *static_cast<RetentionPause*>(context);
+        if (sync.armed.exchange(false)) {
+            sync.paused.count_down();
+            sync.release.wait();
+        }
+    }
+    void Release() noexcept
+    {
+        if (!released.exchange(true)) release.count_down();
+    }
+};
+
+struct ReleaseRetentionPause final {
+    RetentionPause& pause;
+    ~ReleaseRetentionPause() { pause.Release(); }
+};
+
+void AgeEvictionPreservesSharedGraphUntilLastContributor()
+{
+    using namespace std::chrono_literals;
+    TopologyUpdateSync updates;
+    RetentionMapFixture f{2s, {.max_quiescent_age = 10s}};
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(f.map, TopologyUpdateSync::Signal, &updates);
+    f.Start();
+    f.Append({MakeSpan(1, 1, "frontend"), MakeSpan(1, 2, "checkout", 1)});
+    Require(f.map.WaitForPublishedAfter(0).has_value(), "first edge missing");
+    f.clock.Advance(1s);
+    f.Append({MakeSpan(2, 1, "frontend"), MakeSpan(2, 2, "checkout", 1)});
+    updates.WaitFor(2);
+    f.Advance(9s);
+    updates.WaitFor(3);
+    Require(f.traces.retained_trace_count() == 1 && f.map.topology_version() == 1
+                && f.renderer.RenderedGraphs().size() == 2,
+            "first eviction erased shared references or rendered equivalent topology");
+    f.Advance(1s);
+    const auto empty = f.map.WaitForPublishedAfter(1);
+    Require(empty && !empty->has_telemetry && f.traces.retained_trace_count() == 0
+                && f.map.SnapshotGraph() == silhouette::BuildServiceGraph(f.traces.Snapshot())
+                && f.map.SnapshotGraph().services.empty() && f.map.SnapshotGraph().edges.empty(),
+            "last eviction retained historical topology or telemetry presence");
+}
+
+void DelayedEvictionNotificationCannotDeleteReappearedTrace()
+{
+    using namespace std::chrono_literals;
+    RetentionPause pause;
+    TopologyUpdateSync updates;
+    RetentionMapFixture f{1h, {.max_quiescent_traces = 0, .max_quiescent_age = 24h}};
+    ReleaseRetentionPause release_on_exit{pause};
+    ActiveTraceManagerTestPeer::SetBeforeEvictionNotifyHook(
+        f.traces, RetentionPause::Pause, &pause);
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(f.map, TopologyUpdateSync::Signal, &updates);
+    f.Start();
+    f.Append({MakeSpan(1, 1, "old-parent")});
+    Require(f.map.WaitForPublishedAfter(0).has_value(), "original trace missing");
+    f.Advance(1h);
+    pause.paused.wait();
+    Require(f.traces.Snapshot().empty(), "eviction was not committed before callback");
+    f.Append({MakeSpan(1, 2, "fresh-child", 1)});
+    Require(f.map.WaitForPublishedAfter(1).has_value(), "reappeared trace missing");
+    pause.Release();
+    updates.WaitFor(3);
+    f.traces.StopLifecycle();
+    f.map.CloseAndDrain();
+    const auto graph = f.map.SnapshotGraph();
+    Require(f.traces.Snapshot().front().spans.size() == 1 && graph.gaps.size() == 1
+                && graph.services == std::vector<std::string>{"fresh-child"}
+                && f.map.topology_version() == 2 && f.renderer.RenderedGraphs().size() == 3
+                && graph == silhouette::BuildServiceGraph(f.traces.Snapshot()),
+            "old eviction deleted the new incarnation or recovered forgotten evidence");
+}
+
+void ReappearanceAfterAbsentLookupConvergesToNewestEvidence()
+{
+    using namespace std::chrono_literals;
+    TopologyUpdateSync updates;
+    RetentionPause pause;
+    pause.armed = false;
+    RetentionMapFixture f{1h, {.max_quiescent_traces = 0, .max_quiescent_age = 24h}};
+    ReleaseRetentionPause release_on_exit{pause};
+    LiveServiceMapTestPeer::SetAfterTraceLookupHook(f.map, RetentionPause::Pause, &pause);
+    LiveServiceMapTestPeer::SetAfterTopologyUpdateHook(f.map, TopologyUpdateSync::Signal, &updates);
+    f.Start();
+    f.Append({MakeSpan(1, 1, "old")});
+    Require(f.map.WaitForPublishedAfter(0).has_value(), "initial trace missing");
+    pause.armed = true;
+    f.Advance(1h);
+    pause.paused.wait();
+    f.Append({MakeSpan(1, 2, "new", 1)});
+    pause.Release();
+    updates.WaitFor(3);
+    const auto published = f.map.WaitForPublishedAfter(2, std::chrono::seconds{5});
+    Require(published.has_value(), "new evidence never rendered");
+    f.traces.StopLifecycle();
+    f.map.CloseAndDrain();
+    Require(f.map.SnapshotGraph() == silhouette::BuildServiceGraph(f.traces.Snapshot())
+                && f.map.SnapshotGraph().services == std::vector<std::string>{"new"},
+            "queued evidence did not repair the older absence snapshot");
+}
+
+struct EvictionInsertionFailure final {
+    std::atomic<bool> armed{false};
+    std::atomic<int> remaining{0};
+    static void Insert(void* context)
+    {
+        auto& failure = *static_cast<EvictionInsertionFailure*>(context);
+        if (failure.armed.load() && failure.remaining.fetch_sub(1) == 0) {
+            failure.armed = false;
+            throw std::bad_alloc{};
+        }
+    }
+};
+
+void EvictionNotificationFailuresRecoverByFullResync()
+{
+    using namespace std::chrono_literals;
+    for (const int successful_inserts : {0, 1}) {
+        EvictionInsertionFailure failure;
+        RetentionMapFixture f{1h, {.max_quiescent_traces = 0, .max_quiescent_age = 24h}};
+        LiveServiceMapTestPeer::SetBeforeDirtyInsertHook(f.map, EvictionInsertionFailure::Insert, &failure);
+        f.Start();
+        f.Append({MakeSpan(1, 1, "A"), MakeSpan(2, 1, "B")});
+        Require(f.map.WaitForPublishedAfter(0).has_value(), "initial traces missing");
+        failure.remaining = successful_inserts;
+        failure.armed = true;
+        f.Advance(1h);
+        const auto empty = f.map.WaitForPublishedAfter(1);
+        Require(empty && !empty->has_telemetry && f.map.SnapshotGraph().services.empty()
+                    && f.traces.Snapshot().empty(),
+                "first/partial eviction notification failure left stale graph state");
+    }
+}
+
+
+void ShutdownDeliversCommittedEvictionsBeforeMapDrain()
+{
+    using namespace std::chrono_literals;
+    RetentionPause pause;
+    std::latch stop_requested{1};
+    std::atomic<bool> stopped{false};
+    RetentionMapFixture f{1h, {.max_quiescent_traces = 0, .max_quiescent_age = 24h}};
+    ReleaseRetentionPause release_on_exit{pause};
+    ActiveTraceManagerTestPeer::SetBeforeEvictionNotifyHook(f.traces, RetentionPause::Pause, &pause);
+    ActiveTraceManagerTestPeer::SetAfterStopRequestHook(f.traces, [](void* context) noexcept {
+        static_cast<std::latch*>(context)->count_down();
+    }, &stop_requested);
+    f.Start();
+    f.Append({MakeSpan(1, 1, "old")});
+    Require(f.map.WaitForPublishedAfter(0).has_value(), "original map missing");
+    f.Advance(1h);
+    pause.paused.wait();
+    std::thread stopper{[&] { f.traces.StopLifecycle(); stopped = true; }};
+    stop_requested.wait();
+    const bool returned_before_delivery = stopped.load();
+    pause.Release();
+    stopper.join();
+    f.map.CloseAndDrain();
+    Require(!returned_before_delivery && stopped && f.traces.Snapshot().empty()
+                && f.map.SnapshotGraph().services.empty()
+                && f.map.SnapshotPublished() && !f.map.SnapshotPublished()->has_telemetry,
+            "shutdown discarded a committed eviction or destroyed its sink too early");
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"shutdown_delivers_committed_evictions",
+             ShutdownDeliversCommittedEvictionsBeforeMapDrain},
+    TestCase{"age_eviction_preserves_shared_graph",
+             AgeEvictionPreservesSharedGraphUntilLastContributor},
+    TestCase{"delayed_eviction_cannot_delete_reappeared_trace",
+             DelayedEvictionNotificationCannotDeleteReappearedTrace},
+    TestCase{"reappearance_after_lookup_converges",
+             ReappearanceAfterAbsentLookupConvergesToNewestEvidence},
+    TestCase{"eviction_notification_failure_resynchronizes",
+             EvictionNotificationFailuresRecoverByFullResync},
+
     TestCase{"quiescence_preserves_topology_versions_and_telemetry",
              QuiescencePreservesTopologyVersionsAndTelemetry},
     TestCase{"late_parent_reopens_quiescent_trace_and_replaces_gap",

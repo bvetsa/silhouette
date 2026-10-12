@@ -1,15 +1,15 @@
 # Project Status
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 ## Current status
 
 Silhouette continuously retains accepted OTLP spans in an application-owned
 `ActiveTraceManager` and incrementally maintains the observed service topology.
 Traces become quiescent after 30 seconds without accepted evidence and reopen
-on late evidence. All active and quiescent traces remain retained and contribute
-to topology. Operational finalization does not establish trace completeness.
-Each accepted non-empty export publishes its complete batch, advances counters,
+on late evidence. Retained active and quiescent traces contribute to topology;
+quiescent history is bounded by count and age, and each trace has a span cap. Operational finalization does not establish trace completeness.
+Each export publishes its complete admitted subset, advances cumulative counters,
 and then emits sorted unique dirty trace IDs under a narrow publication mutex.
 The graph worker reconstructs only those traces from their latest authoritative
 state, atomically replaces their reference-counted topology contributions, and
@@ -26,43 +26,38 @@ existing deterministic trace, service graph, DOT, and SVG outputs.
 
 ## Current task
 
-V2.3 trace quiescence is implemented on `codex/v2-trace-quiescence`, based on
-merged V2.2 `origin/main` at `4995d6a` (PR #8). Changes are local and
-uncommitted, ready for review and integration.
+V2.4 bounded recent trace retention is implemented and committed on
+`v2-bounded-retention` at implementation commit `8269c9a`, based on merged V2.3
+`main` at `66fbbb4`.
+The branch includes admission limits, presence-aware lookup, atomic graph
+reconciliation, automatic age/count eviction, exact OTLP capacity rejection,
+and an application shutdown guard. Production defaults remain 30-second
+quiescence with 1,000 quiescent traces, ten-minute accepted-evidence age, and
+10,000 spans per logical trace. Active traces are protected.
 
-The manager now retains active/quiescent lifecycle state with a 30-second
-production quiet interval, an injected monotonic function-pointer/context clock,
-and one explicitly started deadline worker. Lifecycle counts derive from records
-under the existing mutex. Quiescence preserves evidence and topology; accepted
-late evidence reopens traces. Startup is one-shot, stop is idempotent, and
-shutdown stops the lifecycle worker after OTLP has joined without forcing
-remaining active traces to become quiescent.
+A fresh Debug configure/build in `build-v2-retention` succeeds, reusing installed
+pinned dependencies and the pinned cached protocol source while rebuilding the
+application and regenerating bindings. The focused manager, incremental-graph,
+and live-map cases pass, and the fresh full 129-case CTest suite passes locally,
+including loopback integrations and Graphviz. New real OTLP/HTTP/Graphviz cases verify exact mixed and
+capacity-only rejection, zero-rejection responses, cumulative admissions after
+eviction, response preparation failure before publication, safe partial-startup
+unwinding, idle real-time age expiry without new exports, disappearance and fresh
+reappearance, and final artifacts derived only from retained evidence.
 
-The Debug build passes all 110 CTest cases, including real localhost gRPC/HTTP
-and Graphviz integrations. The new real-OTLP test sends a missing-parent child,
-advances fake observation time and explicitly wakes the worker, checks retained
-quiescence without topology churn, sends an empty export, then sends the late
-parent and verifies reopening, gap removal, the confirmed service edge,
-counters, and ordered shutdown. Deterministic manager/live-map tests cover exact
-deadlines, resets, duplicate/empty input, one timestamp per publication/sweep,
-coherent counts, owned snapshots, atomic lifecycle publication, both race orders,
-retained telemetry presence, and idle/deadline worker cleanup.
-
-Eleven concurrency-sensitive manager/live-map cases pass 100 repetitions each
-(1,100 runs). A separate executable acceptance check used the production
-30-second interval and a real external OTLP/gRPC client: the child became
-quiescent, its HTTP SVG remained byte-identical, an empty export left it quiet,
-and a late parent reopened it and replaced the missing-parent gap with the
-confirmed `frontend -> checkout` edge. Ctrl-C returned zero and produced
-inspected DOT/SVG artifacts and both retained spans. Both receiver publication-
-order regressions also pass 100 repetitions each (200 runs). Final diff review
-and whitespace checks pass. No remote V2.3 push or CI result has been verified.
-Native Windows execution remains untested on this macOS host.
+The fresh full suite passes. Eleven concurrency-sensitive cases pass 100
+repetitions each (1,100 runs). Three new receiver/failure/partial-startup cases pass twenty repetitions each
+(60 runs). SVG XML inspection confirms fresh retained support with expired support
+absent. Final review and whitespace checks pass. The feature branch is pushed.
+No pull request or GitHub Actions result has been verified yet. Native Windows
+execution remains untested on this macOS host. TSan CI is an optional follow-up
+and no CD work is included.
 
 ## Next concrete step
 
-Review and integrate V2.3. Define the bounded retention and deterministic
-eviction policy separately for V2.4.
+Open the V2.4 pull request, verify GitHub Actions CI, review the final PR diff,
+and merge only after CI passes. After merge, verify `main` CI. Keep future
+playback, inference, and aggregate active-state resource budgets separate.
 
 ## Accepted decisions
 
@@ -73,9 +68,14 @@ eviction policy separately for V2.4.
 - Integration target: a completely separate existing instrumented application, used for manual testing only.
 - V1 lifecycle: finite in-memory capture stopped with Ctrl-C, followed by batch processing.
 - V2.1 lifecycle: continuously inspectable active traces with no finalization or eviction yet.
+- V2.4 retention: cap quiescent history at 1,000 records and expire age >= ten minutes since last accepted evidence; enforce age before count, then oldest evidence time and TraceId ties. Zero history capacity is valid; active traces remain protected.
+- Span admission: cap each logical trace at 10,000 spans including duplicates; reject the whole incoming contribution for an over-cap trace while atomically admitting fitting siblings. Rejection does not refresh lifecycle, and no persistent saturation flag is stored.
+- Eviction propagation: NotifyTracesEvicted is a latest-state invalidation after manager unlock; presence-aware lookup drives one atomic graph reconciliation. Failed insertion requests full resync. Complete eviction forgets prior evidence without tombstones.
+- Sweep failure: preparation commits neither quiescence nor eviction on failure, then waits for publication/shutdown or a one-second failure-only retry. Retention can lag during resource exhaustion; no manager reporting dependency is added.
+- OTLP accounting: protobuf response/string storage is prepared before manager publication. Counters count cumulative actual admissions; exact validation plus capacity rejection uses partial success, and fully rejected processed exports still increment request totals.
 - V2.3 lifecycle: active/quiescent state is the source of truth; derive counts coherently under the manager mutex without cached lifecycle counters. Every non-empty accepted batch refreshes affected traces, including duplicates; empty exports do nothing.
 - Quiescence timing: use one steady-clock observation time per publication and per sweep. Clock callbacks are monotonic, noexcept, non-blocking, non-reentrant, and their contexts outlive the manager and worker.
-- Lifecycle worker: one manager-owned worker waits for the nearest remaining duration, or indefinitely without active traces. Recheck current metadata on every wake. Start is one-shot; stop-before-start does not consume it, repeated stop is harmless, and destruction joins the worker. Fake-clock tests explicitly wake and acknowledge sweeps rather than relying on physical waiting.
+- Lifecycle worker: one manager-owned worker waits for the nearest quiescence/expiry duration, or indefinitely without remaining deadlines. Recheck current metadata on every wake. Start is one-shot; stop-before-start does not consume it, repeated stop is harmless, and destruction joins the worker. Fake-clock tests explicitly wake and acknowledge sweeps rather than relying on physical waiting.
 - Retained lifecycle: snapshots include active and quiescent traces, and retained count equals active plus quiescent. Quiescence does not notify topology or render; retained count drives telemetry presence.
 - V2.2 update semantics: dirty trace IDs are latest-state invalidations, not immutable export snapshots; normal topology work reconstructs only affected traces.
 - Incremental topology: store one `ServiceGraph` contribution per trace and maintain deterministic service, edge, and gap reference counts; `ReplaceAll()` is failure recovery only.
@@ -137,9 +137,10 @@ An open decision is not permission for an agent to choose silently. Present opti
 ## Known issues
 
 No known conversion, receiver, trace-reconstruction, service-aggregation, or
-incremental-topology correctness issues. V2.3 intentionally retains every
-observed trace and contribution for the process lifetime, including quiescent
-traces. Bounded retention and eviction are not implemented. Each published live
+incremental-topology correctness issues. V2.4 bounds quiescent count/age and
+per-trace spans, but an unlimited active workload or arbitrarily large span data
+still has no hard process-memory bound. Allocation exhaustion can temporarily
+delay lifecycle and retention. The map converges asynchronously after eviction. Each published live
 frame still requires a full Graphviz layout, although obsolete pending frames
 are coalesced. The live server is fixed to loopback port 8008 and has no stable
 configuration interface. SVG generation requires external Graphviz on `PATH`;
@@ -148,6 +149,17 @@ public contracts. A failed live render retains the last valid SVG and waits for
 new telemetry to retry; there is no timer or automatic retry loop.
 
 ## Latest work
+
+- Added V2.4 per-trace admission results and limits, cumulative receiver
+  accounting, and prepared protobuf partial-success storage before publication.
+- Added owned presence-aware lookups and atomic contribution reconciliation,
+  with eviction notifications interpreted as current-state invalidations.
+- Extended the one lifecycle worker to prepare/commit complete quiescence and
+  age/count sweeps, preserve state on preparation failure, and publish after unlock.
+- Armed application RAII cleanup before startup to protect the eviction sink
+  through partial startup and committed-notification shutdown paths.
+- Added deterministic boundary, filtering, rollback, race, shared-reference,
+  notification-failure, and shutdown coverage plus real OTLP/HTTP/Graphviz expiry.
 
 - Added V2.3 active/quiescent lifecycle state, monotonic observation-time injection,
   derived coherent counts, and a one-shot manager-owned deadline worker.
@@ -293,7 +305,7 @@ new telemetry to retry; there is no timer or automatic retry loop.
 
 ## Deferred work
 
-Bounded retention and eviction, persistence,
+Global resource/backpressure budgets, persistence,
 request playback, incremental Graphviz layout, configurable networking, and a
-larger browser interface remain deferred beyond V2.3. Candidate later
+larger browser interface remain deferred beyond V2.4. Candidate later
 directions remain listed in `ROADMAP.md`.

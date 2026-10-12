@@ -179,7 +179,7 @@ void SsePublishesRenderedVersionAndServerShutdownWakesWaiter()
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, "frontend"),
         MakeSpan(2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     received_version_one.wait();
     // Exercise another callback after the version latch reaches zero.
     received_heartbeat_after_version_one.wait();
@@ -308,7 +308,7 @@ void SseCapacityKeepsViewerAndGraphRoutesAvailable()
 
     live_map.NotifyTracesDirty(active_traces.AppendBatch({
         MakeSpan(1, "frontend"), MakeSpan(2, "checkout", 1),
-    }));
+    }).affected_trace_ids);
     const auto updated = live_map.WaitForPublishedAfter(initial->rendered_version);
     updated_event.wait();
     const auto updated_graph = client.Get("/graph.svg?v=1");

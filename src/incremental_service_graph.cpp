@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <map>
+#include <set>
+#include <stdexcept>
 #include <utility>
 
 namespace silhouette {
@@ -60,11 +62,24 @@ void AddContribution(
 void IncrementalServiceGraph::UpdateTraces(
     const std::span<const ReconstructedTrace> traces)
 {
+    ReconcileTraces(traces, {});
+}
+
+void IncrementalServiceGraph::ReconcileTraces(
+    const std::span<const ReconstructedTrace> traces,
+    const std::span<const TraceId> absent_ids)
+{
     std::map<TraceId, ServiceGraph> prepared;
     for (const auto& trace : traces) {
         prepared.insert_or_assign(trace.trace_id, BuildContribution(trace));
     }
-    if (prepared.empty()) {
+    const std::set<TraceId> removed{absent_ids.begin(), absent_ids.end()};
+    for (const auto& id : removed) {
+        if (prepared.contains(id)) {
+            throw std::invalid_argument{"reconciled trace cannot be both present and absent"};
+        }
+    }
+    if (prepared.empty() && removed.empty()) {
         return;
     }
 
@@ -86,8 +101,28 @@ void IncrementalServiceGraph::UpdateTraces(
         }
     }
 
+    if (before_reconcile_commit_hook_) {
+        before_reconcile_commit_hook_(before_reconcile_commit_context_);
+    }
     if (before_commit_hook_) {
         before_commit_hook_(before_commit_context_);
+    }
+
+    for (const auto& id : removed) {
+        const auto found = state_.contributions.find(id);
+        if (found == state_.contributions.end()) {
+            continue;
+        }
+        for (const auto& service : found->second.services) {
+            Decrement(state_.service_refcounts, service);
+        }
+        for (const auto& edge : found->second.edges) {
+            Decrement(state_.edge_refcounts, edge);
+        }
+        for (const auto& gap : found->second.gaps) {
+            Decrement(state_.gap_refcounts, gap);
+        }
+        state_.contributions.erase(found);
     }
 
     for (const auto& [trace_id, contribution] : prepared) {

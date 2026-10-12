@@ -8,6 +8,12 @@ namespace silhouette::testing {
 
 class LiveServiceMapTestPeer final {
 public:
+    static void SetAfterTraceLookupHook(
+        LiveServiceMap& map, void (*hook)(void*), void* context)
+    {
+        map.after_trace_lookup_hook_ = hook;
+        map.after_trace_lookup_context_ = context;
+    }
     using TestHook = void (*)(void*);
 
     static void SetBeforeRenderWaitHook(

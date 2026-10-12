@@ -32,7 +32,7 @@ struct PublishedServiceMap final {
     std::string svg;
 };
 
-class LiveServiceMap final : public TraceUpdateSink {
+class LiveServiceMap final : public TraceUpdateSink, public TraceEvictionSink {
 public:
     // All referenced objects must outlive this live-map instance.
     LiveServiceMap(
@@ -48,8 +48,9 @@ public:
 
     void Start();
     void NotifyTracesDirty(std::vector<TraceId> trace_ids) noexcept override;
+    void NotifyTracesEvicted(std::vector<TraceId> trace_ids) noexcept override;
 
-    // Called only after the OTLP receiver has stopped and joined its handlers.
+    // Called only after OTLP and the lifecycle worker have stopped and joined.
     void CloseAndDrain() noexcept;
 
     [[nodiscard]] ServiceGraph SnapshotGraph() const;
@@ -119,6 +120,8 @@ private:
     void* after_dirty_insert_context_{nullptr};
     TestHook before_trace_snapshot_hook_{nullptr};
     void* before_trace_snapshot_context_{nullptr};
+    TestHook after_trace_lookup_hook_{nullptr};
+    void* after_trace_lookup_context_{nullptr};
     TestHook after_topology_update_hook_{nullptr};
     void* after_topology_update_context_{nullptr};
     TestHook before_render_wait_hook_{nullptr};

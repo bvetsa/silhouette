@@ -5,6 +5,9 @@
 #include "active_trace_manager_test_peer.h"
 #include "local_map_server_test_peer.h"
 #include "trace_lifecycle_test_support.h"
+#include "otlp_grpc_receiver_test_peer.h"
+#include "application_shutdown_guard.h"
+#include "rendering/service_graph_artifacts.h"
 
 #include <grpcpp/grpcpp.h>
 #include <httplib.h>
@@ -15,6 +18,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <atomic>
+#include <fstream>
 #include <iostream>
 #include <latch>
 #include <memory>
@@ -513,7 +518,7 @@ void RealOtlpQuiescenceAndLateParent()
     using silhouette::testing::AdvanceAndWakeLifecycle;
     FakeTraceClock clock;
     LifecycleSweepSync sweeps;
-    silhouette::ActiveTraceManager active_traces{1h, FakeTraceClock::Now, &clock};
+    silhouette::ActiveTraceManager active_traces{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
     silhouette::LiveServiceMap live_map{active_traces, renderer, diagnostics};
@@ -576,12 +581,196 @@ void RealOtlpQuiescenceAndLateParent()
             "real late-parent export failed reopening, topology, counters, or shutdown");
 }
 
+
+void CapacityPartialSuccessAndCumulativeCounters()
+{
+    using namespace std::chrono_literals;
+    silhouette::testing::FakeTraceClock clock;
+    silhouette::ActiveTraceManager traces{2s, silhouette::TraceRetentionLimits{
+        .max_quiescent_age = 10s, .max_spans_per_trace = 3},
+        silhouette::testing::FakeTraceClock::Now, &clock};
+    RecordingUpdateSink sink{traces};
+    Receiver receiver{kEphemeralAddress, traces, &sink};
+    sink.SetReceiver(receiver);
+    receiver.Start();
+    const auto stub = Connect(receiver);
+    otlp::ExportTraceServiceRequest seed;
+    AddValidSpan(seed, 1, 1, "a"); AddValidSpan(seed, 1, 2, "b");
+    Require(!ExportSuccessfully(*stub, seed).has_partial_success(), "seed export was rejected");
+    clock.Advance(9s);
+    otlp::ExportTraceServiceRequest mixed;
+    for (std::uint8_t i : {3, 4, 5}) AddValidSpan(mixed, 1, i, "over-cap");
+    AddValidSpan(mixed, 2, 1, "sibling"); AddValidSpan(mixed, 2, 2, "sibling");
+    AddValidSpan(mixed, 3, 1, "invalid");
+    mixed.mutable_resource_spans(5)->mutable_scope_spans(0)->mutable_spans(0)
+        ->set_span_id(std::string(silhouette::SpanId::kSize, '\0'));
+    const auto response = ExportSuccessfully(*stub, mixed);
+    Require(response.partial_success().rejected_spans() == 4
+                && response.partial_success().error_message()
+                    == "Silhouette rejected 1 span(s) with invalid identifiers and 3 span(s) because a retained trace would exceed its span limit."
+                && receiver.accepted_span_count() == 4 && RetainedSpanCount(traces) == 4
+                && sink.notifications().back() == std::vector<silhouette::TraceId>{MakeTraceId(2)},
+            "mixed validation/capacity rejection changed counts, siblings, or notification IDs");
+    otlp::ExportTraceServiceRequest smaller;
+    AddValidSpan(smaller, 1, 3, "fits");
+    Require(!ExportSuccessfully(*stub, smaller).has_partial_success(), "fitting later batch rejected");
+    const auto notifications = sink.notifications().size();
+    const auto rejected = ExportSuccessfully(*stub, smaller);
+    Require(rejected.partial_success().rejected_spans() == 1
+                && rejected.partial_success().error_message()
+                    == "Silhouette rejected 1 span(s) because a retained trace would exceed its span limit."
+                && receiver.accepted_span_count() == 5 && receiver.accepted_request_count() == 4
+                && sink.notifications().size() == notifications,
+            "fully capacity-rejected export counted or notified unretained evidence");
+    clock.Advance(10s);
+    static_cast<void>(ActiveTraceManagerTestPeer::SweepLifecycle(traces));
+    Require(traces.Snapshot().empty() && receiver.accepted_span_count() == 5,
+            "eviction incorrectly decremented cumulative admission counters");
+    receiver.Shutdown();
+}
+
+struct ResponsePreparationFailure final {
+    std::atomic<bool> fail{true};
+    static void Prepare(void* context)
+    {
+        if (static_cast<ResponsePreparationFailure*>(context)->fail.exchange(false)) {
+            throw std::bad_alloc{};
+        }
+    }
+};
+
+void ResponsePreparationFailurePublishesNothingAndRetryAdmitsOnce()
+{
+    ResponsePreparationFailure failure;
+    silhouette::ActiveTraceManager traces;
+    RecordingUpdateSink sink{traces};
+    Receiver receiver{kEphemeralAddress, traces, &sink};
+    sink.SetReceiver(receiver);
+    silhouette::testing::OtlpGrpcReceiverTestPeer::SetBeforeResponsePrepareHook(
+        receiver, ResponsePreparationFailure::Prepare, &failure);
+    receiver.Start();
+    const auto stub = Connect(receiver);
+    otlp::ExportTraceServiceRequest request;
+    AddValidSpan(request, 1, 1, "retry-once");
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds{5});
+    otlp::ExportTraceServiceResponse response;
+    const auto status = stub->Export(&context, request, &response);
+    Require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED
+                && traces.Snapshot().empty() && sink.notifications().empty()
+                && receiver.accepted_span_count() == 0 && receiver.accepted_request_count() == 0,
+            "fallible response preparation ran after manager publication or counters");
+    Require(!ExportSuccessfully(*stub, request).has_partial_success()
+                && RetainedSpanCount(traces) == 1 && receiver.accepted_span_count() == 1
+                && receiver.accepted_request_count() == 1 && sink.notifications().size() == 1,
+            "retry after preparation failure duplicated or rejected retained evidence");
+    receiver.Shutdown();
+}
+
+void ShutdownGuardStopsLifecycleAfterPartialStartup()
+{
+    using namespace std::chrono_literals;
+    silhouette::testing::FakeTraceClock clock;
+    silhouette::testing::LifecycleSweepSync sweeps;
+    silhouette::ActiveTraceManager traces{1h, {.max_quiescent_age = 24h},
+        silhouette::testing::FakeTraceClock::Now, &clock};
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap map{traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, map};
+    Receiver receiver{"invalid-address", traces, &map};
+    ActiveTraceManagerTestPeer::SetAfterSweepHook(traces,
+        silhouette::testing::LifecycleSweepSync::Signal, &sweeps);
+    bool unwound = false;
+    try {
+        silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map, server};
+        traces.StartLifecycle(&map);
+        map.Start();
+        sweeps.WaitFor(1);
+        throw std::runtime_error{"injected failure before receiver/HTTP startup"};
+    } catch (const std::runtime_error&) {
+        unwound = true;
+    }
+    bool stopped = false;
+    try { traces.StartLifecycle(&map); } catch (const std::logic_error&) { stopped = true; }
+    Require(unwound && stopped && map.publisher_stopped(),
+            "partial startup unwinding failed to stop the worker before its sink");
+    // Pre-start shutdown of receiver/server must remain harmless.
+    receiver.Shutdown(); server.Shutdown();
+}
+
+void RealTimeRetentionExpiresWithoutNewExports()
+{
+    using namespace std::chrono_literals;
+    silhouette::ActiveTraceManager traces{100ms, {.max_quiescent_age = 2s}};
+    silhouette::rendering::GraphvizServiceGraphRenderer renderer;
+    std::ostringstream diagnostics;
+    silhouette::LiveServiceMap map{traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, map};
+    Receiver receiver{kEphemeralAddress, traces, &map};
+    silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map, server};
+    traces.StartLifecycle(&map); map.Start(); server.Start(); receiver.Start();
+    const auto stub = Connect(receiver);
+    Require(map.WaitForPublishedAfter(std::nullopt, 5s).has_value(), "initial SVG missing");
+    const auto request_for = [](const std::uint8_t span_id, const std::string& service) {
+        otlp::ExportTraceServiceRequest request;
+        AddValidSpan(request, 1, span_id, service);
+        auto* attribute = request.mutable_resource_spans(0)->mutable_resource()->add_attributes();
+        attribute->set_key("service.name"); attribute->mutable_value()->set_string_value(service);
+        return request;
+    };
+    ExportSuccessfully(*stub, request_for(1, "expiredservice"));
+    Require(map.WaitForPublishedAfter(0, 5s).has_value(), "initial evidence did not render");
+    const auto empty = map.WaitForPublishedAfter(1, 10s);
+    Require(empty && !empty->has_telemetry && traces.Snapshot().empty(),
+            "real age deadline required new traffic to evict retained history");
+    httplib::Client http{"127.0.0.1", server.selected_port()};
+    const auto empty_svg = http.Get("/graph.svg");
+    Require(empty_svg && empty_svg->status == 200
+                && empty_svg->body.find("expiredservice") == std::string::npos,
+            "HTTP continued publishing the evicted service");
+    ExportSuccessfully(*stub, request_for(2, "freshservice"));
+    receiver.Shutdown(); traces.StopLifecycle();
+    const auto fresh = map.WaitForPublishedAfter(2, 5s);
+    const auto retained = traces.Snapshot();
+    Require(fresh && fresh->has_telemetry && retained.size() == 1
+                && retained.front().spans.size() == 1 && receiver.accepted_span_count() == 2,
+            "reappearance recovered old evidence or lost cumulative admissions");
+    const auto fresh_svg = http.Get("/graph.svg");
+    Require(fresh_svg && fresh_svg->body.find("freshservice") != std::string::npos,
+            "HTTP failed to serve the new retained incarnation");
+    shutdown.Shutdown();
+    const auto graph = silhouette::BuildServiceGraph(traces.Snapshot());
+    Require(map.SnapshotGraph() == graph, "shutdown failed to converge retained topology");
+    const auto artifacts = silhouette::rendering::WriteServiceGraphArtifacts(graph);
+    Require(artifacts.svg_rendered, "final retained SVG failed to render");
+    std::ifstream dot_file{"silhouette.dot"};
+    std::ifstream svg_file{"silhouette.svg"};
+    const std::string dot{std::istreambuf_iterator<char>{dot_file}, {}};
+    const std::string svg{std::istreambuf_iterator<char>{svg_file}, {}};
+    Require(dot.find("freshservice") != std::string::npos
+                && svg.find("<svg") != std::string::npos
+                && svg.find("freshservice") != std::string::npos
+                && dot.find("expiredservice") == std::string::npos
+                && svg.find("expiredservice") == std::string::npos,
+            "final artifacts were not derived exclusively from retained evidence");
+}
+
 struct TestCase {
     std::string_view name;
     void (*run)();
 };
 
 constexpr std::array kTestCases{
+    TestCase{"capacity_partial_success_and_cumulative_counters",
+             CapacityPartialSuccessAndCumulativeCounters},
+    TestCase{"response_preparation_failure_is_atomic",
+             ResponsePreparationFailurePublishesNothingAndRetryAdmitsOnce},
+    TestCase{"shutdown_guard_handles_partial_startup",
+             ShutdownGuardStopsLifecycleAfterPartialStartup},
+    TestCase{"real_time_retention_expires_without_new_exports",
+             RealTimeRetentionExpiresWithoutNewExports},
+
     TestCase{"real_otlp_quiescence_and_late_parent",
              RealOtlpQuiescenceAndLateParent},
     TestCase{"http_enqueue_failure_does_not_disable_ingestion",
