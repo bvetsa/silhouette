@@ -9,6 +9,7 @@
       ]
     },
     "cpp-httplib",
+    "nlohmann-json",
     "protobuf"
   ]
 }

@@ -1,0 +1,7 @@
+#pragma once
+#include <string_view>
+namespace silhouette::presentation {
+inline constexpr std::string_view kViewerHtml = R"VIEWER(@SILHOUETTE_VIEWER_HTML@)VIEWER";
+inline constexpr std::string_view kViewerCss = R"VIEWER(@SILHOUETTE_VIEWER_CSS@)VIEWER";
+inline constexpr std::string_view kViewerJs = R"VIEWER(@SILHOUETTE_VIEWER_JS@)VIEWER";
+}

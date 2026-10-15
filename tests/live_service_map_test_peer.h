@@ -11,8 +11,8 @@ public:
     static void SetAfterTraceLookupHook(
         LiveServiceMap& map, void (*hook)(void*), void* context)
     {
-        map.after_trace_lookup_hook_ = hook;
-        map.after_trace_lookup_context_ = context;
+        map.queries_.after_trace_lookup_hook_ = hook;
+        map.queries_.after_trace_lookup_context_ = context;
     }
     using TestHook = void (*)(void*);
 
@@ -26,8 +26,8 @@ public:
     static void SetAfterTopologyUpdateHook(
         LiveServiceMap& live_map, TestHook hook, void* context)
     {
-        live_map.after_topology_update_hook_ = hook;
-        live_map.after_topology_update_context_ = context;
+        live_map.queries_.after_topology_update_hook_ = hook;
+        live_map.queries_.after_topology_update_context_ = context;
     }
 
     static void PublishTopology(
@@ -39,22 +39,22 @@ public:
     static void SetBeforeDirtyInsertHook(
         LiveServiceMap& live_map, TestHook hook, void* context)
     {
-        live_map.before_dirty_insert_hook_ = hook;
-        live_map.before_dirty_insert_context_ = context;
+        live_map.queries_.before_dirty_insert_hook_ = hook;
+        live_map.queries_.before_dirty_insert_context_ = context;
     }
 
     static void SetAfterDirtyInsertHook(
         LiveServiceMap& live_map, TestHook hook, void* context)
     {
-        live_map.after_dirty_insert_hook_ = hook;
-        live_map.after_dirty_insert_context_ = context;
+        live_map.queries_.after_dirty_insert_hook_ = hook;
+        live_map.queries_.after_dirty_insert_context_ = context;
     }
 
     static void SetBeforeTraceSnapshotHook(
         LiveServiceMap& live_map, TestHook hook, void* context)
     {
-        live_map.before_trace_snapshot_hook_ = hook;
-        live_map.before_trace_snapshot_context_ = context;
+        live_map.queries_.before_trace_snapshot_hook_ = hook;
+        live_map.queries_.before_trace_snapshot_context_ = context;
     }
 
     static void WaitForTopologyVersion(
@@ -68,9 +68,9 @@ public:
 
     static void WaitForInvalidationInputClosed(LiveServiceMap& live_map)
     {
-        std::unique_lock lock{live_map.dirty_mutex_};
-        live_map.dirty_cv_.wait(lock, [&] {
-            return live_map.invalidation_input_closed_;
+        std::unique_lock lock{live_map.queries_.dirty_mutex_};
+        live_map.queries_.dirty_cv_.wait(lock, [&] {
+            return live_map.queries_.invalidation_input_closed_;
         });
     }
 };

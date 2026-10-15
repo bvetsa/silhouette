@@ -1,4 +1,7 @@
 #include "silhouette/local_map_server.h"
+#include "silhouette/rendering/topology_fact_key.h"
+#include "presentation/observability_json.h"
+#include "viewer_assets.h"
 
 #include <httplib.h>
 
@@ -23,48 +26,6 @@
 namespace silhouette {
 namespace {
 
-constexpr auto kViewerHtml = R"HTML(<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Silhouette</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #f8fafc; color: #0f172a; }
-    header { display: flex; justify-content: space-between; padding: 1rem 1.5rem;
-             background: white; border-bottom: 1px solid #e2e8f0; }
-    #status { color: #64748b; font-size: .85rem; letter-spacing: .08em; }
-    main { min-height: calc(100vh - 4rem); display: grid; place-items: center; padding: 1.5rem; }
-    #waiting { color: #64748b; }
-    #graph { max-width: 100%; height: auto; display: none; }
-  </style>
-</head>
-<body>
-  <header><strong>Silhouette</strong><span id="status">CONNECTING</span></header>
-  <main><p id="waiting">Waiting for telemetry...</p><img id="graph" alt="Live service map"></main>
-  <script>
-    const status = document.getElementById('status');
-    const waiting = document.getElementById('waiting');
-    const graph = document.getElementById('graph');
-    const events = new EventSource('/events');
-    events.onopen = () => { status.textContent = 'LIVE'; };
-    events.onerror = () => { status.textContent = 'RECONNECTING'; };
-    events.addEventListener('graph-updated', event => {
-      const update = JSON.parse(event.data);
-      if (update.hasTelemetry) {
-        graph.src = '/graph.svg?v=' + update.version;
-        graph.style.display = 'block';
-        waiting.style.display = 'none';
-      } else {
-        graph.style.display = 'none';
-        waiting.style.display = 'block';
-      }
-    });
-  </script>
-</body>
-</html>)HTML";
-
 constexpr auto kSseHeartbeatInterval = std::chrono::seconds{1};
 constexpr std::string_view kSseHeartbeat = ": keep-alive\n\n";
 
@@ -76,6 +37,18 @@ void ReportHttpFailure(
                   << detail << '\n';
     } catch (...) {
     }
+}
+
+// Known-length providers avoid cpp-httplib's expensive default Brotli pass
+// over every large live query response, without changing its media type.
+void SetQueryContent(httplib::Response& response, std::string body)
+{
+    auto payload = std::make_shared<const std::string>(std::move(body));
+    response.set_content_provider(payload->size(), "application/json",
+        [payload](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+            if (offset > payload->size() || length > payload->size() - offset) return false;
+            return sink.write(payload->data() + offset, length);
+        });
 }
 
 class SseSlot final {
@@ -177,10 +150,11 @@ private:
 class LocalMapServer::Impl final {
 public:
     Impl(std::string listen_address, const int port,
-         const LiveServiceMap& live_map)
+         const LiveServiceMap& live_map, const ObservabilityQueryService& queries)
         : listen_address_{std::move(listen_address)}
         , requested_port_{port}
         , live_map_{live_map}
+        , queries_{queries}
     {
         if (listen_address_.empty()) {
             throw std::invalid_argument{"live map listen address cannot be empty"};
@@ -195,7 +169,15 @@ public:
         };
 
         server_.Get("/", [](const httplib::Request&, httplib::Response& response) {
-            response.set_content(kViewerHtml, "text/html; charset=utf-8");
+            response.set_content(std::string{presentation::kViewerHtml}, "text/html; charset=utf-8");
+            response.set_header("Cache-Control", "no-store");
+        });
+        server_.Get("/viewer.js", [](const httplib::Request&, httplib::Response& response) {
+            response.set_content(std::string{presentation::kViewerJs}, "text/javascript; charset=utf-8");
+            response.set_header("Cache-Control", "no-store");
+        });
+        server_.Get("/viewer.css", [](const httplib::Request&, httplib::Response& response) {
+            response.set_content(std::string{presentation::kViewerCss}, "text/css; charset=utf-8");
             response.set_header("Cache-Control", "no-store");
         });
         server_.Get("/graph.svg", [this](const httplib::Request&,
@@ -209,7 +191,56 @@ public:
                     "text/plain; charset=utf-8");
                 return;
             }
+            response.set_header("X-Silhouette-Rendered-Version", std::to_string(published->rendered_version));
+            response.set_header("X-Silhouette-Observation-Instance", queries_.observation_instance_id().value);
             response.set_content(published->svg, "image/svg+xml");
+        });
+        server_.Post("/query/support", [this](const httplib::Request& request, httplib::Response& response) {
+            response.set_header("Cache-Control", "no-store");
+            try {
+                std::optional<TopologyFact> fact;
+                std::optional<SupportCursor> cursor;
+                try {
+                    const auto input = nlohmann::json::parse(request.body);
+                    fact = rendering::DecodeTopologyFact(input.at("factKey").get<std::string>());
+                    if (!fact) throw std::invalid_argument{"invalid topology fact key"};
+                    cursor = presentation::ParseCursor(input.value("cursor", nlohmann::json(nullptr)));
+                    if (cursor && cursor->instance != queries_.observation_instance_id())
+                        throw std::invalid_argument{"cursor belongs to another observation instance"};
+                } catch (const nlohmann::json::exception&) {
+                    response.status = 400; response.set_content("Malformed support query.\n", "text/plain"); return;
+                } catch (const std::invalid_argument& error) {
+                    response.status = 400; response.set_content(error.what(), "text/plain"); return;
+                }
+                const auto page = queries_.QuerySupport(*fact, cursor);
+                auto output = presentation::ToJson(page);
+                output["factLabel"] = presentation::DescribeFact(*fact);
+                SetQueryContent(response, output.dump());
+            } catch (const std::exception& error) {
+                ReportHttpFailure("support query failed", error.what());
+                response.status = 500; response.set_content("Support query failed.\n", "text/plain");
+            }
+        });
+        server_.Get(R"(/query/trace/([^/]+)/([^/]+))", [this](const httplib::Request& request, httplib::Response& response) {
+            response.set_header("Cache-Control", "no-store");
+            try {
+                std::optional<TraceRecordKey> key;
+                try {
+                    key = presentation::ParseRecordKey(request.matches[1].str(), request.matches[2].str());
+                    if (!request.has_param("instance")) throw std::invalid_argument{"missing observation instance"};
+                } catch (const std::invalid_argument& error) {
+                    response.status = 400; response.set_content(error.what(), "text/plain"); return;
+                }
+                const auto detail = request.get_param_value("instance") == queries_.observation_instance_id().value
+                    ? queries_.QueryTrace(*key) : std::nullopt;
+                if (!detail) {
+                    response.status = 404; response.set_content("Trace record is no longer retained.\n", "text/plain"); return;
+                }
+                SetQueryContent(response, presentation::ToJson(*detail).dump());
+            } catch (const std::exception& error) {
+                ReportHttpFailure("trace query failed", error.what());
+                response.status = 500; response.set_content("Trace query failed.\n", "text/plain");
+            }
         });
         server_.Get("/events", [this](const httplib::Request&,
                                       httplib::Response& response) {
@@ -232,33 +263,35 @@ public:
             response.set_chunked_content_provider(
                 "text/event-stream",
                 [this, stop_token,
-                 version = std::optional<std::uint64_t>{}]
+                 version = std::optional<std::uint64_t>{},
+                 observation = std::optional<std::uint64_t>{}]
                 (std::size_t, httplib::DataSink& sink) mutable {
                     if (!sink.is_writable()) {
                         sink.done();
                         return false;
                     }
-                    const auto published =
-                        live_map_.WaitForPublishedAfter(
-                            version, kSseHeartbeatInterval, stop_token);
-                    if (!published) {
-                        if (stop_token.stop_requested()
-                            || live_map_.publisher_stopped()
-                            || !sink.is_writable()) {
-                            sink.done();
-                            return false;
-                        }
-                        return sink.write(
-                            kSseHeartbeat.data(), kSseHeartbeat.size());
+                    const auto state = live_map_.WaitForVersionsAfter(
+                        version, observation, kSseHeartbeatInterval, stop_token);
+                    if (stop_token.stop_requested() || state.stopped || !sink.is_writable()) {
+                        sink.done(); return false;
                     }
-                    const auto event = "event: graph-updated\nid: "
-                        + std::to_string(published->rendered_version)
-                        + "\ndata: {\"version\":"
-                        + std::to_string(published->rendered_version)
-                        + ",\"hasTelemetry\":"
-                        + (published->has_telemetry ? "true" : "false")
-                        + "}\n\n";
-                    version = published->rendered_version;
+                    std::string event;
+                    const auto& instance = queries_.observation_instance_id().value;
+                    if (state.rendered_version && (!version || *state.rendered_version > *version)) {
+                        event = "event: graph-updated\nid: " + std::to_string(*state.rendered_version)
+                            + "\ndata: " + nlohmann::json{
+                                {"version", *state.rendered_version},
+                                {"renderedVersion", std::to_string(*state.rendered_version)},
+                                {"instance", instance}, {"hasTelemetry", state.has_telemetry}}.dump() + "\n\n";
+                        version = state.rendered_version;
+                    }
+                    if (!observation || state.observation_version > *observation) {
+                        event += "event: observations-updated\ndata: " + nlohmann::json{
+                            {"instance", instance},
+                            {"observationVersion", std::to_string(state.observation_version)}}.dump() + "\n\n";
+                        observation = state.observation_version;
+                    }
+                    if (event.empty()) return sink.write(kSseHeartbeat.data(), kSseHeartbeat.size());
                     return sink.write(event.data(), event.size());
                 },
                 [slot = std::move(slot)](bool) mutable { slot.reset(); });
@@ -388,6 +421,7 @@ private:
     std::string listen_address_;
     int requested_port_;
     const LiveServiceMap& live_map_;
+    const ObservabilityQueryService& queries_;
     httplib::Server server_;
     std::stop_source stop_source_;
     std::size_t worker_count_{CPPHTTPLIB_THREAD_POOL_COUNT};
@@ -405,9 +439,9 @@ private:
 
 LocalMapServer::LocalMapServer(
     std::string listen_address, const int port,
-    const LiveServiceMap& live_map)
+    const LiveServiceMap& live_map, const ObservabilityQueryService& queries)
     : impl_{std::make_unique<Impl>(
-          std::move(listen_address), port, live_map)}
+          std::move(listen_address), port, live_map, queries)}
 {
 }
 

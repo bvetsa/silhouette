@@ -3,18 +3,20 @@
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
+#include "diagnostics_mutex.h"
 #include <utility>
 
 namespace silhouette {
 
 LiveServiceMap::LiveServiceMap(
-    ActiveTraceManager& active_traces,
+    ObservabilityQueryService& queries,
     rendering::ServiceGraphRenderer& renderer,
     std::ostream& diagnostics)
-    : active_traces_{active_traces}
+    : queries_{queries}
     , renderer_{renderer}
     , diagnostics_{diagnostics}
 {
+    queries_.SetChangeSink(this);
 }
 
 LiveServiceMap::~LiveServiceMap()
@@ -28,25 +30,6 @@ void LiveServiceMap::Start()
         throw std::logic_error{"live service map can only be started once"};
     }
     started_ = true;
-    graph_thread_ = std::thread{[this] {
-        try {
-            GraphWorker();
-        } catch (const std::exception& error) {
-            Report("graph worker stopped unexpectedly", error.what());
-        } catch (...) {
-            Report("graph worker stopped with an unknown error");
-        }
-
-        {
-            std::scoped_lock lock{dirty_mutex_};
-            invalidation_input_closed_ = true;
-        }
-        {
-            std::scoped_lock lock{topology_mutex_};
-            topology_input_closed_ = true;
-        }
-        topology_cv_.notify_one();
-    }};
     render_thread_ = std::thread{[this] {
         try {
             RenderWorker();
@@ -58,31 +41,33 @@ void LiveServiceMap::Start()
     }};
 }
 
-void LiveServiceMap::NotifyTracesDirty(
-    std::vector<TraceId> trace_ids) noexcept
+void LiveServiceMap::NotifyQueryChanged(QueryChange change) noexcept
 {
-    std::scoped_lock lock{dirty_mutex_};
-    if (invalidation_input_closed_) {
-        return;
+    {
+        std::scoped_lock lock{published_mutex_};
+        observation_version_ = change.observation_version;
     }
-    try {
-        for (const auto& trace_id : trace_ids) {
-            if (before_dirty_insert_hook_) {
-                before_dirty_insert_hook_(before_dirty_insert_context_);
-            }
-            dirty_trace_ids_.insert(trace_id);
-            if (after_dirty_insert_hook_) {
-                after_dirty_insert_hook_(after_dirty_insert_context_);
-            }
-        }
-    } catch (...) {
-        // Once dirty-set insertion fails, the dirty set is advisory only until
-        // ReplaceAll() successfully resynchronizes from ActiveTraceManager.
-        // Publish the wait predicate under its mutex so the worker cannot miss
-        // the recovery notification when even the first insertion failed.
-        resync_requests_.fetch_add(1, std::memory_order_relaxed);
+    published_cv_.notify_all();
+    if (change.topology) {
+        try { PublishTopology(std::move(*change.topology), change.has_telemetry); }
+        catch (const std::exception& error) { Report("topology handoff failed", error.what()); }
+        catch (...) { Report("topology handoff failed"); }
     }
-    dirty_cv_.notify_one();
+}
+
+PresentationVersions LiveServiceMap::WaitForVersionsAfter(
+    const std::optional<std::uint64_t> rendered_version,
+    const std::optional<std::uint64_t> observation_version,
+    const std::chrono::milliseconds timeout, const std::stop_token stop_token) const
+{
+    std::unique_lock lock{published_mutex_};
+    published_cv_.wait_for(lock, stop_token, timeout, [&] {
+        return publisher_stopped_ || !observation_version
+            || observation_version_ > *observation_version
+            || (published_ && (!rendered_version || published_->rendered_version > *rendered_version));
+    });
+    return {published_ ? std::optional{published_->rendered_version} : std::nullopt,
+            observation_version_, published_ && published_->has_telemetry, publisher_stopped_};
 }
 
 void LiveServiceMap::CloseAndDrain() noexcept
@@ -91,13 +76,10 @@ void LiveServiceMap::CloseAndDrain() noexcept
         return;
     }
     {
-        std::scoped_lock lock{dirty_mutex_};
-        invalidation_input_closed_ = true;
+        std::scoped_lock lock{topology_mutex_};
+        topology_input_closed_ = true;
     }
-    dirty_cv_.notify_one();
-    if (graph_thread_.joinable()) {
-        graph_thread_.join();
-    }
+    topology_cv_.notify_one();
     if (render_thread_.joinable()) {
         render_thread_.join();
     }
@@ -109,16 +91,9 @@ void LiveServiceMap::CloseAndDrain() noexcept
     closed_ = true;
 }
 
-void LiveServiceMap::NotifyTracesEvicted(std::vector<TraceId> trace_ids) noexcept
-{
-    // An old eviction can arrive after reappearance. Coalesce invalidations,
-    // then let LookupTraces decide replacement versus removal at processing time.
-    NotifyTracesDirty(std::move(trace_ids));
-}
-
 ServiceGraph LiveServiceMap::SnapshotGraph() const
 {
-    return graph_.Snapshot();
+    return queries_.SnapshotGraph();
 }
 
 std::uint64_t LiveServiceMap::topology_version() const
@@ -171,106 +146,6 @@ bool LiveServiceMap::publisher_stopped() const
 {
     std::scoped_lock lock{published_mutex_};
     return publisher_stopped_;
-}
-
-void LiveServiceMap::GraphWorker()
-{
-    std::uint64_t completed_resync = 0;
-    std::uint64_t failed_resync = 0;
-
-    for (;;) {
-        std::vector<TraceId> dirty_ids;
-        bool should_resync = false;
-        std::uint64_t resync_target = completed_resync;
-        {
-            std::unique_lock lock{dirty_mutex_};
-            dirty_cv_.wait(lock, [&] {
-                const auto requested =
-                    resync_requests_.load(std::memory_order_relaxed);
-                return invalidation_input_closed_ || !dirty_trace_ids_.empty()
-                    || requested > std::max(completed_resync, failed_resync);
-            });
-
-            const auto requested =
-                resync_requests_.load(std::memory_order_relaxed);
-            should_resync = requested > completed_resync;
-            resync_target = requested;
-            dirty_ids.assign(
-                dirty_trace_ids_.begin(), dirty_trace_ids_.end());
-            dirty_trace_ids_.clear();
-
-            if (invalidation_input_closed_ && dirty_ids.empty()
-                && !should_resync) {
-                break;
-            }
-        }
-
-        try {
-            if (should_resync) {
-                const auto traces = active_traces_.Snapshot();
-                graph_.ReplaceAll(traces);
-                // The authoritative snapshot and complete replacement make any
-                // partial dirty-set state claimed with this request obsolete.
-                // Only now is this resynchronization considered complete.
-                completed_resync = resync_target;
-                failed_resync = 0;
-            } else if (!dirty_ids.empty()) {
-                if (before_trace_snapshot_hook_) {
-                    before_trace_snapshot_hook_(
-                        before_trace_snapshot_context_);
-                }
-                auto lookups = active_traces_.LookupTraces(dirty_ids);
-                if (after_trace_lookup_hook_) {
-                    after_trace_lookup_hook_(after_trace_lookup_context_);
-                }
-                std::vector<ReconstructedTrace> present;
-                std::vector<TraceId> absent;
-                present.reserve(lookups.size());
-                absent.reserve(lookups.size());
-                for (auto& lookup : lookups) {
-                    if (lookup.trace) {
-                        present.push_back(std::move(*lookup.trace));
-                    } else {
-                        absent.push_back(lookup.trace_id);
-                    }
-                }
-                graph_.ReconcileTraces(present, absent);
-            }
-
-            PublishTopology(
-                graph_.Snapshot(), active_traces_.retained_trace_count() > 0);
-            if (after_topology_update_hook_) {
-                after_topology_update_hook_(after_topology_update_context_);
-            }
-        } catch (const std::exception& error) {
-            if (should_resync) {
-                failed_resync = resync_target;
-            } else {
-                resync_requests_.fetch_add(1, std::memory_order_relaxed);
-            }
-            Report("live topology update failed", error.what());
-        } catch (...) {
-            if (should_resync) {
-                failed_resync = resync_target;
-            } else {
-                resync_requests_.fetch_add(1, std::memory_order_relaxed);
-            }
-            Report("live topology update failed with an unknown error");
-        }
-
-        if (should_resync && failed_resync == resync_target) {
-            std::scoped_lock lock{dirty_mutex_};
-            if (invalidation_input_closed_) {
-                break;
-            }
-        }
-    }
-
-    {
-        std::scoped_lock lock{topology_mutex_};
-        topology_input_closed_ = true;
-    }
-    topology_cv_.notify_one();
 }
 
 void LiveServiceMap::RenderWorker()
@@ -368,7 +243,7 @@ void LiveServiceMap::Report(
     const std::string_view detail) noexcept
 {
     try {
-        std::scoped_lock lock{diagnostics_mutex_};
+        std::scoped_lock lock{detail::DiagnosticsMutex()};
         diagnostics_ << "Silhouette live map: " << message;
         if (!detail.empty()) {
             diagnostics_ << ": " << detail;

@@ -1,3 +1,4 @@
+#include "query_live_map_test_support.h"
 #include "silhouette/active_trace_manager.h"
 #include "silhouette/ingestion/otlp_grpc_receiver.h"
 #include "silhouette/local_map_server.h"
@@ -190,9 +191,9 @@ void HttpWorkerStartupFailureDoesNotDisableIngestion()
     ReceiverFixture fixture;
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
-    silhouette::LiveServiceMap live_map{
+    silhouette::testing::QueryLiveMap live_map{
         fixture.active_traces, renderer, diagnostics};
-    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     silhouette::testing::LocalMapServerTestPeer::FailWorkerStartup(server);
     bool reported = false;
     try {
@@ -220,9 +221,9 @@ void HttpEnqueueFailureDoesNotDisableIngestion()
     ReceiverFixture fixture;
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
-    silhouette::LiveServiceMap live_map{
+    silhouette::testing::QueryLiveMap live_map{
         fixture.active_traces, renderer, diagnostics};
-    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     std::size_t attempts = 0;
     silhouette::testing::LocalMapServerTestPeer::BeforeEnqueue(server, [&] {
         if (++attempts == 1) {
@@ -521,7 +522,7 @@ void RealOtlpQuiescenceAndLateParent()
     silhouette::ActiveTraceManager active_traces{1h, silhouette::TraceRetentionLimits{.max_quiescent_age = 24h}, FakeTraceClock::Now, &clock};
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
-    silhouette::LiveServiceMap live_map{active_traces, renderer, diagnostics};
+    silhouette::testing::QueryLiveMap live_map{active_traces, renderer, diagnostics};
     Receiver receiver{kEphemeralAddress, active_traces, &live_map};
     ActiveTraceManagerTestPeer::SetAfterSweepHook(
         active_traces, LifecycleSweepSync::Signal, &sweeps);
@@ -676,14 +677,14 @@ void ShutdownGuardStopsLifecycleAfterPartialStartup()
         silhouette::testing::FakeTraceClock::Now, &clock};
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
-    silhouette::LiveServiceMap map{traces, renderer, diagnostics};
-    silhouette::LocalMapServer server{"127.0.0.1", 0, map};
+    silhouette::testing::QueryLiveMap map{traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, map, map.queries()};
     Receiver receiver{"invalid-address", traces, &map};
     ActiveTraceManagerTestPeer::SetAfterSweepHook(traces,
         silhouette::testing::LifecycleSweepSync::Signal, &sweeps);
     bool unwound = false;
     try {
-        silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map, server};
+        silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map.queries(), map, server};
         traces.StartLifecycle(&map);
         map.Start();
         sweeps.WaitFor(1);
@@ -705,10 +706,10 @@ void RealTimeRetentionExpiresWithoutNewExports()
     silhouette::ActiveTraceManager traces{100ms, {.max_quiescent_age = 2s}};
     silhouette::rendering::GraphvizServiceGraphRenderer renderer;
     std::ostringstream diagnostics;
-    silhouette::LiveServiceMap map{traces, renderer, diagnostics};
-    silhouette::LocalMapServer server{"127.0.0.1", 0, map};
+    silhouette::testing::QueryLiveMap map{traces, renderer, diagnostics};
+    silhouette::LocalMapServer server{"127.0.0.1", 0, map, map.queries()};
     Receiver receiver{kEphemeralAddress, traces, &map};
-    silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map, server};
+    silhouette::ApplicationShutdownGuard shutdown{receiver, traces, map.queries(), map, server};
     traces.StartLifecycle(&map); map.Start(); server.Start(); receiver.Start();
     const auto stub = Connect(receiver);
     Require(map.WaitForPublishedAfter(std::nullopt, 5s).has_value(), "initial SVG missing");

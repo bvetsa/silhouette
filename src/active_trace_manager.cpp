@@ -1,6 +1,7 @@
 #include "silhouette/active_trace_manager.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -61,7 +62,8 @@ ActiveTraceManager::Clock::time_point ActiveTraceManager::ProductionNow(
     return Clock::now();
 }
 
-void ActiveTraceManager::StartLifecycle(TraceEvictionSink* const eviction_sink)
+void ActiveTraceManager::StartLifecycle(TraceEvictionSink* const eviction_sink,
+                                      TraceLifecycleSink* const lifecycle_sink)
 {
     std::scoped_lock lock{mutex_};
     if (worker_state_ != WorkerState::not_started) {
@@ -70,6 +72,7 @@ void ActiveTraceManager::StartLifecycle(TraceEvictionSink* const eviction_sink)
     // A failed thread construction leaves the manager unstarted.
     lifecycle_thread_ = std::thread{&ActiveTraceManager::LifecycleWorker, this};
     eviction_sink_ = eviction_sink;
+    lifecycle_sink_ = lifecycle_sink;
     worker_state_ = WorkerState::running;
 }
 
@@ -113,6 +116,14 @@ ActiveTraceManager::SweepResult ActiveTraceManager::SweepLifecycleLocked()
     for (std::size_t i = 0; i < expired + overflow; ++i) {
         result.evicted_ids.push_back(quiescent[i].second);
     }
+    // Only transitions which survive the complete sweep are observable.
+    result.quiesced_ids.reserve(quiescent.size() - expired - overflow);
+    for (std::size_t i = expired + overflow; i < quiescent.size(); ++i) {
+        const auto& id = quiescent[i].second;
+        if (batches_by_trace_.at(id).lifecycle == TraceLifecycle::active) {
+            result.quiesced_ids.push_back(id);
+        }
+    }
     if (before_retention_commit_hook_) {
         before_retention_commit_hook_(before_retention_commit_context_);
     }
@@ -153,6 +164,13 @@ void ActiveTraceManager::PublishEvictions(std::vector<TraceId> trace_ids) noexce
     eviction_sink_->NotifyTracesEvicted(std::move(trace_ids));
 }
 
+void ActiveTraceManager::PublishQuiescence(std::vector<TraceId> trace_ids) noexcept
+{
+    if (!trace_ids.empty() && lifecycle_sink_ != nullptr) {
+        lifecycle_sink_->NotifyTracesQuiesced(std::move(trace_ids));
+    }
+}
+
 void ActiveTraceManager::LifecycleWorker()
 {
     for (;;) {
@@ -178,9 +196,11 @@ void ActiveTraceManager::LifecycleWorker()
         if (after_sweep_hook_) {
             after_sweep_hook_(after_sweep_context_);
         }
-        if (!result.evicted_ids.empty() && eviction_sink_ != nullptr) {
+        if ((!result.evicted_ids.empty() && eviction_sink_ != nullptr)
+            || (!result.quiesced_ids.empty() && lifecycle_sink_ != nullptr)) {
             lock.unlock();
             PublishEvictions(std::move(result.evicted_ids));
+            PublishQuiescence(std::move(result.quiesced_ids));
             lock.lock();
             // Publication may have happened during the callback. Reevaluate
             // immediately rather than sleeping on a stale pre-callback wait.
@@ -235,6 +255,17 @@ AppendResult ActiveTraceManager::AppendBatch(std::vector<Span> spans)
         return result;
     }
 
+    std::size_t new_records = 0;
+    for (const auto& [id, state] : incoming_by_trace) {
+        static_cast<void>(state);
+        new_records += !batches_by_trace_.contains(id);
+    }
+    if (publication_sequence_ == std::numeric_limits<std::uint64_t>::max()
+        || new_records > std::numeric_limits<TraceIncarnationId>::max()
+                           - last_incarnation_) {
+        throw std::overflow_error{"trace record identity or publication sequence exhausted"};
+    }
+
     // Reserve every affected existing trace before changing logical state. A
     // failed allocation can change capacity but cannot publish part of a batch.
     for (const auto& [trace_id, incoming_state] : incoming_by_trace) {
@@ -256,6 +287,7 @@ AppendResult ActiveTraceManager::AppendBatch(std::vector<Span> spans)
     }
 
     const auto now = clock_now_(clock_context_);
+    const auto sequence = publication_sequence_ + 1;
 
     // Existing traces append prepared chunks without allocating. New map nodes
     // were already allocated; merge allocates nothing, and TraceId ordering
@@ -265,6 +297,8 @@ AppendResult ActiveTraceManager::AppendBatch(std::vector<Span> spans)
         incoming->second.last_evidence_time = now;
         const auto existing = batches_by_trace_.find(incoming->first);
         if (existing == batches_by_trace_.end()) {
+            incoming->second.incarnation = ++last_incarnation_;
+            incoming->second.publication_sequence = sequence;
             ++incoming;
             continue;
         }
@@ -274,12 +308,94 @@ AppendResult ActiveTraceManager::AppendBatch(std::vector<Span> spans)
         }
         existing->second.lifecycle = TraceLifecycle::active;
         existing->second.last_evidence_time = now;
+        existing->second.publication_sequence = sequence;
         incoming = incoming_by_trace.erase(incoming);
     }
     batches_by_trace_.merge(incoming_by_trace);
+    publication_sequence_ = sequence;
     lock.unlock();
     lifecycle_cv_.notify_one();
     return result;
+}
+
+TraceRecordMetadata ActiveTraceManager::MetadataLocked(
+    const TraceId& id, const TraceState& state, const Clock::time_point now) const
+{
+    std::size_t count = 0;
+    for (const auto& batch : state.batches) {
+        count += batch.size();
+    }
+    return {{id, state.incarnation}, state.lifecycle, state.publication_sequence,
+            state.last_evidence_time, now - state.last_evidence_time, count};
+}
+
+std::vector<Span> ActiveTraceManager::CopyEvidence(const TraceState& state)
+{
+    std::size_t count = 0;
+    for (const auto& batch : state.batches) {
+        count += batch.size();
+    }
+    std::vector<Span> result;
+    result.reserve(count);
+    for (const auto& batch : state.batches) {
+        result.insert(result.end(), batch.begin(), batch.end());
+    }
+    return result;
+}
+
+std::vector<TraceRecordSnapshot> ActiveTraceManager::SnapshotRecords() const
+{
+    std::scoped_lock lock{mutex_};
+    const auto now = clock_now_(clock_context_);
+    std::vector<TraceRecordSnapshot> records;
+    records.reserve(batches_by_trace_.size());
+    for (const auto& [id, state] : batches_by_trace_) {
+        records.push_back({MetadataLocked(id, state, now), CopyEvidence(state)});
+    }
+    return records;
+}
+
+std::vector<TraceRecordLookup> ActiveTraceManager::LookupRecords(
+    const std::span<const TraceId> trace_ids,
+    const std::span<const TraceRecordRevision> known,
+    const bool copy_changed_evidence) const
+{
+    const std::set<TraceId> unique{trace_ids.begin(), trace_ids.end()};
+    std::map<TraceId, TraceRecordRevision> revisions;
+    for (const auto& revision : known) {
+        revisions.insert_or_assign(revision.key.trace_id, revision);
+    }
+    std::vector<TraceRecordLookup> result;
+    result.reserve(unique.size());
+    std::scoped_lock lock{mutex_};
+    const auto now = clock_now_(clock_context_);
+    for (const auto& id : unique) {
+        const auto found = batches_by_trace_.find(id);
+        if (found == batches_by_trace_.end()) {
+            result.push_back({id, std::nullopt, std::nullopt});
+            continue;
+        }
+        const auto metadata = MetadataLocked(id, found->second, now);
+        const auto revision = revisions.find(id);
+        const auto unchanged = revision != revisions.end()
+            && revision->second.key == metadata.key
+            && revision->second.publication_sequence == metadata.publication_sequence;
+        result.push_back({id, metadata, (unchanged || !copy_changed_evidence)
+            ? std::optional<std::vector<Span>>{}
+            : CopyEvidence(found->second)});
+    }
+    return result;
+}
+
+std::optional<TraceRecordSnapshot> ActiveTraceManager::LookupRecord(
+    const TraceRecordKey& key) const
+{
+    auto records = LookupRecords(std::span{&key.trace_id, std::size_t{1}});
+    auto& record = records.front();
+    if (!record.metadata || record.metadata->key != key) {
+        return std::nullopt;
+    }
+    return TraceRecordSnapshot{*record.metadata, std::move(*record.evidence)};
 }
 
 std::vector<ReconstructedTrace> ActiveTraceManager::Snapshot() const

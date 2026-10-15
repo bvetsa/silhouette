@@ -1,3 +1,4 @@
+#include "query_live_map_test_support.h"
 #include "silhouette/live_service_map.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "live_service_map_test_peer.h"
@@ -28,7 +29,7 @@ namespace {
 
 using silhouette::ActiveTraceManager;
 using silhouette::FormatServiceGraph;
-using silhouette::LiveServiceMap;
+using LiveServiceMap = silhouette::testing::QueryLiveMap;
 using silhouette::ServiceGraph;
 using silhouette::Span;
 using silhouette::SpanId;

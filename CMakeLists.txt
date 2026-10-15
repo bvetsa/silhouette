@@ -5,6 +5,7 @@ project(Silhouette LANGUAGES CXX)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 include(FetchContent)
@@ -120,6 +121,8 @@ target_link_libraries(silhouette_otlp_proto PUBLIC gRPC::grpc++ protobuf::libpro
 add_library(silhouette_core
     src/active_trace_manager.cpp
     src/incremental_service_graph.cpp
+    src/observability_query_service.cpp
+    src/trace_provenance_index.cpp
     src/service_graph.cpp
     src/span.cpp
     src/trace_reconstruction.cpp
@@ -131,6 +134,7 @@ target_link_libraries(silhouette_core PRIVATE Threads::Threads)
 silhouette_enable_warnings(silhouette_core)
 
 add_library(silhouette_rendering
+    src/rendering/topology_fact_key.cpp
     src/rendering/service_graph_dot.cpp
     src/rendering/service_graph_artifacts.cpp
     src/rendering/service_graph_renderer.cpp
@@ -141,17 +145,27 @@ target_include_directories(silhouette_rendering PUBLIC include PRIVATE src)
 target_link_libraries(silhouette_rendering PUBLIC silhouette_core)
 silhouette_enable_warnings(silhouette_rendering)
 
+foreach(asset IN ITEMS html css js)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/presentation/viewer.${asset}")
+    string(TOUPPER "${asset}" asset_upper)
+    file(READ "src/presentation/viewer.${asset}" SILHOUETTE_VIEWER_${asset_upper})
+endforeach()
+configure_file(src/presentation/viewer_assets.h.in
+    "${SILHOUETTE_GENERATED_DIR}/viewer_assets.h" @ONLY)
+
 add_library(silhouette_live_map
     src/live_service_map.cpp
     src/local_map_server.cpp
+    src/presentation/observability_json.cpp
 )
 target_compile_features(silhouette_live_map PUBLIC cxx_std_20)
 set_target_properties(silhouette_live_map PROPERTIES CXX_EXTENSIONS OFF)
-target_include_directories(silhouette_live_map PUBLIC include)
+target_include_directories(silhouette_live_map PUBLIC include PRIVATE src "${SILHOUETTE_GENERATED_DIR}")
 target_link_libraries(
     silhouette_live_map
     PUBLIC silhouette_core silhouette_rendering
-    PRIVATE httplib::httplib Threads::Threads
+    PRIVATE httplib::httplib Threads::Threads nlohmann_json::nlohmann_json
 )
 silhouette_enable_warnings(silhouette_live_map)
 

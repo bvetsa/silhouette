@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Silhouette — observed service map</title>
+  <link rel="stylesheet" href="/viewer.css">
+  <script src="/viewer.js" defer></script>
+</head>
+<body>
+  <header><div><strong>Silhouette</strong><span class="subtitle">Observed service map</span></div><span id="status" role="status">CONNECTING</span></header>
+  <main>
+    <section class="map" aria-label="Live service topology">
+      <p class="hint">Select a service, dependency, or gap to explore its supporting traces.<span class="compact-hint"> Scroll the map to explore it.</span></p>
+      <p id="waiting" role="status">Waiting for telemetry...</p>
+      <p id="graph-error" class="error" role="status" hidden></p>
+      <div id="graph" aria-label="Interactive service map"></div>
+    </section>
+    <aside aria-labelledby="support-heading">
+      <h1 id="support-heading" tabindex="-1">Supporting traces</h1>
+      <p id="fact-label">Select something on the map to see retained evidence.</p>
+      <p id="support-status" role="status"></p>
+      <button id="support-retry" hidden>Retry trace list</button>
+      <ol id="traces" aria-label="Supporting retained traces"></ol>
+      <button id="more" hidden>Load more traces</button>
+      <p class="footnote">Recent retained evidence only. Quiescent means quiet, not complete.</p>
+    </aside>
+  </main>
+  <dialog id="trace-dialog" aria-labelledby="trace-heading">
+    <div class="dialog-heading"><h2 id="trace-heading">Request trace</h2><button id="close-trace" autofocus>Close</button></div>
+    <p id="trace-status" role="status"></p>
+    <p id="trace-summary"></p>
+    <button id="copy-trace" hidden>Copy trace ID</button>
+    <button id="trace-retry" hidden>Retry trace</button>
+    <span id="copy-status" role="status"></span>
+    <div id="trace-tree" aria-label="Reconstructed request tree"></div>
+  </dialog>
+</body>
+</html>

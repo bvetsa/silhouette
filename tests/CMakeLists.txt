@@ -339,3 +339,40 @@ add_live_service_map_test(shutdown_delivers_committed_evictions)
 add_active_trace_manager_test(concurrent_admitted_subset_is_atomic)
 
 add_active_trace_manager_test(concurrent_writers_obey_capacity)
+
+add_executable(observability_query_service_test observability_query_service_test.cpp)
+target_compile_features(observability_query_service_test PRIVATE cxx_std_20)
+target_link_libraries(observability_query_service_test PRIVATE silhouette_core Threads::Threads)
+silhouette_enable_warnings(observability_query_service_test)
+foreach(test_case IN ITEMS
+    metadata_publication_and_owned_recovery exact_support_and_late_parent
+    versions_and_fake_ages reappearance_and_stale_support live_pagination
+    atomic_preparation_and_full_recovery sweep_notifies_only_quiescent_survivors
+    large_deep_detail_preserves_evidence)
+    add_test(NAME observability_query_${test_case}
+             COMMAND observability_query_service_test ${test_case})
+endforeach()
+
+add_service_graph_rendering_test(stable_interaction_keys_round_trip)
+add_executable(drilldown_http_test drilldown_http_test.cpp)
+target_compile_features(drilldown_http_test PRIVATE cxx_std_20)
+target_link_libraries(drilldown_http_test PRIVATE silhouette_live_map httplib::httplib nlohmann_json::nlohmann_json Threads::Threads)
+silhouette_enable_warnings(drilldown_http_test)
+foreach(test_case IN ITEMS focused_queries_and_transport_errors
+    observation_events_do_not_wait_for_graphviz http_restart_preserves_query_identity large_flat_http_detail)
+    add_test(NAME drilldown_http_${test_case} COMMAND drilldown_http_test ${test_case})
+    set_tests_properties(drilldown_http_${test_case} PROPERTIES TIMEOUT 30)
+endforeach()
+
+# Explicit manual browser fixture; not part of unattended CTest execution.
+add_executable(drilldown_browser_fixture drilldown_browser_fixture.cpp)
+target_compile_features(drilldown_browser_fixture PRIVATE cxx_std_20)
+target_link_libraries(drilldown_browser_fixture PRIVATE silhouette_ingestion silhouette_live_map)
+target_include_directories(drilldown_browser_fixture SYSTEM PRIVATE
+    "${SILHOUETTE_GENERATED_DIR}"
+    "$<TARGET_PROPERTY:protobuf::libprotobuf,INTERFACE_INCLUDE_DIRECTORIES>"
+    "$<TARGET_PROPERTY:gRPC::grpc++,INTERFACE_INCLUDE_DIRECTORIES>")
+silhouette_enable_warnings(drilldown_browser_fixture)
+foreach(test_case IN ITEMS exhaustion_does_not_partially_publish delayed_lifecycle_invalidation_rechecks_current_state)
+    add_test(NAME observability_query_${test_case} COMMAND observability_query_service_test ${test_case})
+endforeach()
