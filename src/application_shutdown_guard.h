@@ -12,9 +12,10 @@ namespace silhouette {
 class ApplicationShutdownGuard final {
 public:
     ApplicationShutdownGuard(ingestion::OtlpGrpcReceiver& receiver,
-                             ActiveTraceManager& traces, LiveServiceMap& map,
+                             ActiveTraceManager& traces,
+                             ObservabilityQueryService& queries, LiveServiceMap& map,
                              LocalMapServer& server) noexcept
-        : receiver_{receiver}, traces_{traces}, map_{map}, server_{server} {}
+        : receiver_{receiver}, traces_{traces}, queries_{queries}, map_{map}, server_{server} {}
     ~ApplicationShutdownGuard() { Shutdown(); }
 
     ApplicationShutdownGuard(const ApplicationShutdownGuard&) = delete;
@@ -24,6 +25,7 @@ public:
     {
         receiver_.Shutdown();
         traces_.StopLifecycle();
+        queries_.CloseAndDrain();
         map_.CloseAndDrain();
         server_.Shutdown();
     }
@@ -31,6 +33,7 @@ public:
 private:
     ingestion::OtlpGrpcReceiver& receiver_;
     ActiveTraceManager& traces_;
+    ObservabilityQueryService& queries_;
     LiveServiceMap& map_;
     LocalMapServer& server_;
 };

@@ -1,4 +1,5 @@
 #include "silhouette/rendering/service_graph_dot.h"
+#include "silhouette/rendering/topology_fact_key.h"
 
 #include <array>
 #include <map>
@@ -67,11 +68,14 @@ void AppendGapNode(
     const std::string_view id,
     const GapAppearance& appearance,
     const std::string_view indent,
-    std::string& output)
+    std::string& output,
+    const std::string_view interaction_id = {})
 {
     output += indent;
     output += id;
-    output += " [label=\"";
+    output += " [";
+    if (!interaction_id.empty()) output += "id=\"" + std::string{interaction_id} + "\", ";
+    output += "label=\"";
     output += EscapeLabel(appearance.label);
     output += "\", shape=";
     output += appearance.shape;
@@ -86,13 +90,14 @@ void AppendDiagnosticEdge(
     const std::string_view source,
     const std::string_view destination,
     const GapAppearance& appearance,
-    std::string& output)
+    std::string& output,
+    const std::string_view interaction_id)
 {
     output += "  ";
     output += source;
     output += " -> ";
     output += destination;
-    output += " [style=dashed, color=\"";
+    output += " [id=\"" + std::string{interaction_id} + "\", style=dashed, color=\"";
     output += appearance.color;
     output += "\"];\n";
 }
@@ -135,26 +140,30 @@ std::string FormatServiceGraphDot(const ServiceGraph& graph)
         const auto& service = graph.services[index];
         const auto id = "service_" + std::to_string(index);
         service_ids.emplace(service, id);
-        output += "  " + id + " [label=\"" + EscapeLabel(service) + "\"];\n";
+        output += "  " + id + " [id=\"" + EncodeTopologyFact(service)
+            + "\", label=\"" + EscapeLabel(service) + "\"];\n";
     }
 
     for (const auto& edge : graph.edges) {
         output += "  " + service_ids.at(edge.source_service) + " -> "
-            + service_ids.at(edge.destination_service) + ";\n";
+            + service_ids.at(edge.destination_service)
+            + " [id=\"" + EncodeTopologyFact(edge) + "\", tooltip=\""
+            + EscapeLabel(edge.source_service + " → " + edge.destination_service) + "\"];\n";
     }
 
     for (std::size_t index = 0; index < graph.gaps.size(); ++index) {
         const auto& gap = graph.gaps[index];
         const auto id = "gap_" + std::to_string(index);
         const auto& appearance = AppearanceFor(gap.kind);
-        AppendGapNode(id, appearance, "  ", output);
+        const auto fact_key = EncodeTopologyFact(gap);
+        AppendGapNode(id, appearance, "  ", output, fact_key);
         if (gap.source_service) {
             AppendDiagnosticEdge(
-                service_ids.at(*gap.source_service), id, appearance, output);
+                service_ids.at(*gap.source_service), id, appearance, output, fact_key + "_source");
         }
         if (gap.destination_service) {
             AppendDiagnosticEdge(
-                id, service_ids.at(*gap.destination_service), appearance, output);
+                id, service_ids.at(*gap.destination_service), appearance, output, fact_key + "_destination");
         }
     }
 

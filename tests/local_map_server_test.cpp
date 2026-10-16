@@ -1,3 +1,4 @@
+#include "query_live_map_test_support.h"
 #include "silhouette/local_map_server.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "local_map_server_test_peer.h"
@@ -24,7 +25,7 @@
 namespace {
 
 using silhouette::ActiveTraceManager;
-using silhouette::LiveServiceMap;
+using LiveServiceMap = silhouette::testing::QueryLiveMap;
 using silhouette::LocalMapServer;
 using silhouette::ServiceGraph;
 using silhouette::Span;
@@ -97,7 +98,7 @@ void ServesViewerAndLatestOwnedSvg()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     live_map.Start();
     const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
     Require(initial.has_value(), "initial SVG was not ready for HTTP serving");
@@ -107,7 +108,7 @@ void ServesViewerAndLatestOwnedSvg()
     const auto viewer = client.Get("/");
     Require(viewer && viewer->status == 200,
             "viewer route did not return HTTP 200");
-    Require(viewer->body.find("EventSource('/events')") != std::string::npos
+    Require(viewer->body.find("/viewer.js") != std::string::npos
                 && viewer->body.find("Waiting for telemetry")
                     != std::string::npos,
             "viewer omitted the thin SSE client or empty-state UI");
@@ -141,7 +142,7 @@ void SsePublishesRenderedVersionAndServerShutdownWakesWaiter()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     live_map.Start();
     const auto initial = live_map.WaitForPublishedAfter(std::nullopt);
     Require(initial.has_value(), "initial SVG was not published");
@@ -208,7 +209,7 @@ void SseHeartbeatWakesIdleStreamAndDetectsDisconnect()
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
     std::latch stream_released{1};
     std::atomic<bool> release_signaled{false};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     LocalMapServerTestPeer::UseTwoWorkers(server);
     LocalMapServerTestPeer::AfterSseRelease(server, [&] {
         if (!release_signaled.exchange(true)) {
@@ -269,7 +270,7 @@ void SseCapacityKeepsViewerAndGraphRoutesAvailable()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     // One persistent SSE stream fills the quota, leaving one HTTP worker.
     LocalMapServerTestPeer::UseTwoWorkers(server);
     live_map.Start();
@@ -337,7 +338,7 @@ void WorkerStartupFailureIsReportedAndReleasesPort()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer failed{"127.0.0.1", 0, live_map};
+    LocalMapServer failed{"127.0.0.1", 0, live_map, live_map.queries()};
     LocalMapServerTestPeer::FailWorkerStartup(failed);
     bool reported = false;
     try {
@@ -352,7 +353,7 @@ void WorkerStartupFailureIsReportedAndReleasesPort()
     Require(failed.selected_port() > 0,
             "failure injection did not run after the socket was bound");
 
-    LocalMapServer replacement{"127.0.0.1", failed.selected_port(), live_map};
+    LocalMapServer replacement{"127.0.0.1", failed.selected_port(), live_map, live_map.queries()};
     replacement.Start();
     auto client = MakeClient(replacement.selected_port());
     const auto response = client.Get("/");
@@ -367,7 +368,7 @@ void EnqueueFailureRejectsOnlyThatRequest()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     std::size_t attempts = 0;
     LocalMapServerTestPeer::BeforeEnqueue(server, [&] {
         if (++attempts == 1) {
@@ -388,7 +389,7 @@ void EnqueueFailureRejectsOnlyThatRequest()
             "enqueue failure stopped the HTTP listener or lost the next request");
     Require(attempts == 2, "enqueue failure retried or duplicated a request");
 
-    LocalMapServer replacement{"127.0.0.1", server.selected_port(), live_map};
+    LocalMapServer replacement{"127.0.0.1", server.selected_port(), live_map, live_map.queries()};
     replacement.Start();
     auto client = MakeClient(replacement.selected_port());
     const auto response = client.Get("/");
@@ -403,7 +404,7 @@ void EnqueueFailureWhileSseWorkerBusyShutsDownCleanly()
     SvgRenderer renderer;
     std::ostringstream diagnostics;
     LiveServiceMap live_map{active_traces, renderer, diagnostics};
-    LocalMapServer server{"127.0.0.1", 0, live_map};
+    LocalMapServer server{"127.0.0.1", 0, live_map, live_map.queries()};
     LocalMapServerTestPeer::UseTwoWorkers(server);
     std::size_t attempts = 0;
     LocalMapServerTestPeer::BeforeEnqueue(server, [&] {

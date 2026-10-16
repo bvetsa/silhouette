@@ -35,7 +35,11 @@ traces remain protected, so this is not a hard process-memory budget.
 
 Quiescence is not proof of completeness. Historical playback, architectural
 inference, and global resource/backpressure policy remain separate future work.
-Other later V2 slices should be defined from implementation evidence.
+V2.5 adds topology-first request drilldown: exact service/edge/gap support lists,
+incarnation-safe trace details, live observation invalidations, and browser-only
+frozen snapshots after eviction. A presentation-independent query service owns
+provenance; HTTP/JSON and the replaceable viewer remain outside the engine.
+Later slices should be defined from implementation evidence.
 
 ## Future directions
 

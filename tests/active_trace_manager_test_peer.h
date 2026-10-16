@@ -8,6 +8,14 @@ namespace silhouette::testing {
 
 class ActiveTraceManagerTestPeer final {
 public:
+    static void SetRecordCounters(ActiveTraceManager& manager,
+                                 TraceIncarnationId incarnation,
+                                 std::uint64_t publication_sequence)
+    {
+        std::scoped_lock lock{manager.mutex_};
+        manager.last_incarnation_ = incarnation;
+        manager.publication_sequence_ = publication_sequence;
+    }
     using Hook = void (*)(void*) noexcept;
 
     static void SetBeforeCommitHook(
@@ -58,6 +66,7 @@ public:
             result = manager.SweepLifecycleLocked();
         }
         manager.PublishEvictions(std::move(result.evicted_ids));
+        manager.PublishQuiescence(std::move(result.quiesced_ids));
         return result.next_wait;
     }
 

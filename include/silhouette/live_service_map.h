@@ -1,7 +1,6 @@
 #pragma once
 
-#include "silhouette/active_trace_manager.h"
-#include "silhouette/incremental_service_graph.h"
+#include "silhouette/observability_query_service.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "silhouette/trace_update_sink.h"
 
@@ -32,11 +31,18 @@ struct PublishedServiceMap final {
     std::string svg;
 };
 
-class LiveServiceMap final : public TraceUpdateSink, public TraceEvictionSink {
+struct PresentationVersions final {
+    std::optional<std::uint64_t> rendered_version;
+    std::uint64_t observation_version;
+    bool has_telemetry;
+    bool stopped;
+};
+
+class LiveServiceMap final : public QueryChangeSink {
 public:
     // All referenced objects must outlive this live-map instance.
     LiveServiceMap(
-        ActiveTraceManager& active_traces,
+        ObservabilityQueryService& queries,
         rendering::ServiceGraphRenderer& renderer,
         std::ostream& diagnostics);
     ~LiveServiceMap() override;
@@ -47,8 +53,11 @@ public:
     LiveServiceMap& operator=(LiveServiceMap&&) = delete;
 
     void Start();
-    void NotifyTracesDirty(std::vector<TraceId> trace_ids) noexcept override;
-    void NotifyTracesEvicted(std::vector<TraceId> trace_ids) noexcept override;
+    void NotifyQueryChanged(QueryChange change) noexcept override;
+    [[nodiscard]] PresentationVersions WaitForVersionsAfter(
+        std::optional<std::uint64_t> rendered_version,
+        std::optional<std::uint64_t> observation_version,
+        std::chrono::milliseconds timeout, std::stop_token stop_token = {}) const;
 
     // Called only after OTLP and the lifecycle worker have stopped and joined.
     void CloseAndDrain() noexcept;
@@ -76,25 +85,15 @@ private:
 
     friend class testing::LiveServiceMapTestPeer;
 
-    void GraphWorker();
     void RenderWorker();
     void PublishTopology(ServiceGraph graph, bool has_telemetry);
     void Report(
         std::string_view message,
         std::string_view detail = {}) noexcept;
 
-    ActiveTraceManager& active_traces_;
+    ObservabilityQueryService& queries_;
     rendering::ServiceGraphRenderer& renderer_;
     std::ostream& diagnostics_;
-    mutable std::mutex diagnostics_mutex_;
-    IncrementalServiceGraph graph_;
-
-    mutable std::mutex dirty_mutex_;
-    std::condition_variable dirty_cv_;
-    std::set<TraceId> dirty_trace_ids_;
-    std::atomic<std::uint64_t> resync_requests_{0};
-    bool invalidation_input_closed_{false};
-
     mutable std::mutex topology_mutex_;
     std::condition_variable topology_cv_;
     ServiceGraph latest_topology_;
@@ -109,21 +108,11 @@ private:
     mutable std::condition_variable_any published_cv_;
     std::optional<PublishedServiceMap> published_;
     bool publisher_stopped_{false};
+    std::uint64_t observation_version_{0};
 
-    std::thread graph_thread_;
     std::thread render_thread_;
     bool started_{false};
     bool closed_{false};
-    TestHook before_dirty_insert_hook_{nullptr};
-    void* before_dirty_insert_context_{nullptr};
-    TestHook after_dirty_insert_hook_{nullptr};
-    void* after_dirty_insert_context_{nullptr};
-    TestHook before_trace_snapshot_hook_{nullptr};
-    void* before_trace_snapshot_context_{nullptr};
-    TestHook after_trace_lookup_hook_{nullptr};
-    void* after_trace_lookup_context_{nullptr};
-    TestHook after_topology_update_hook_{nullptr};
-    void* after_topology_update_context_{nullptr};
     TestHook before_render_wait_hook_{nullptr};
     void* before_render_wait_context_{nullptr};
 };

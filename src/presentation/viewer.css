@@ -1,0 +1,63 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #0f172a; background: #f8fafc; --muted: #475569; --line: #e2e8f0; --accent: #1d4ed8; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; background: white; border-bottom: 1px solid var(--line); }
+header strong { font-size: 1.1rem; }
+.subtitle { margin-left: 1rem; color: var(--muted); font-size: .9rem; }
+#status { font-size: .75rem; font-weight: 650; letter-spacing: .06em; color: var(--muted); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 21rem; min-height: calc(100vh - 4rem); }
+.map { min-width: 0; padding: 1.5rem; }
+.hint, .footnote { color: var(--muted); font-size: .85rem; line-height: 1.6; }
+.hint { margin: 0 0 2rem; }
+.compact-hint { display: none; }
+#waiting { margin: 5rem auto; max-width: 30ch; text-align: center; color: var(--muted); }
+#graph { overflow: auto; }
+#graph svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+#graph [role=button] { cursor: pointer; outline: none; }
+#graph [role=button]:hover text, #graph [role=button]:focus-visible text { fill: #1d4ed8; text-decoration: underline; }
+#graph [role=button]:focus-visible polygon, #graph [role=button]:focus-visible path { stroke: #1d4ed8; stroke-width: 3; }
+#graph .dimmed { opacity: .22; }
+#graph .highlighted polygon, #graph .highlighted path, #graph .highlighted ellipse { stroke-width: 2.5; }
+aside { background: white; border-left: 1px solid var(--line); padding: 1.5rem; min-width: 0; }
+h1 { font-size: 1.15rem; margin: 0 0 .6rem; }
+h2 { font-size: 1.25rem; margin: 0; }
+#fact-label { overflow-wrap: anywhere; line-height: 1.5; margin: 0 0 1.5rem; }
+#support-status { font-size: .85rem; color: var(--muted); }
+#traces { list-style: none; padding: 0; margin: 0 0 1rem; }
+#traces li { border-bottom: 1px solid var(--line); }
+.trace-row { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 0; padding: 1rem 0; display: grid; gap: .4rem; }
+.trace-row:hover, .trace-row[aria-current=true] { background: #eff6ff; }
+.trace-row small { color: var(--muted); line-height: 1.5; }
+.trace-row code { color: #0f172a; }
+button { font: inherit; color: var(--accent); background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: .55rem .8rem; cursor: pointer; min-height: 2.5rem; }
+button:hover { background: #dbeafe; }
+button:disabled { cursor: wait; opacity: .65; }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.footnote { margin-top: 2rem; }
+dialog { width: min(50rem, calc(100vw - 2rem)); max-height: 85vh; padding: 1.5rem; border: 0; border-radius: 12px; box-shadow: 0 16px 48px #0f172a33; color: inherit; }
+dialog::backdrop { background: #0f172a22; }
+.dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+#trace-status { color: var(--muted); line-height: 1.5; }
+#trace-status.stale { color: #9a3412; font-weight: 650; }
+#trace-summary { overflow-wrap: anywhere; color: var(--muted); font-size: .9rem; line-height: 1.5; }
+#trace-tree { margin-top: 1.5rem; }
+.tree-list { list-style: none; padding: 0 0 0 1rem; margin: .5rem 0; border-left: 1px solid var(--line); }
+#trace-tree > .tree-list { padding-left: 0; border-left: 0; }
+.tree-list li { margin: .4rem 0; }
+summary { cursor: pointer; overflow-wrap: anywhere; padding: .5rem .25rem; line-height: 1.5; }
+.span-service { font-weight: 650; }
+.operation { color: var(--muted); }
+.diagnostic { color: #9a3412; font-size: .8rem; margin-left: .6rem; }
+.span-meta { padding: .4rem 1rem; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; line-height: 1.7; }
+.error { color: #b91c1c; line-height: 1.5; }
+::selection { background: #bfdbfe; color: #0f172a; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+  .subtitle { display: none; }
+  .map { padding: 1rem; }
+  .compact-hint { display: inline; }
+  #graph { max-height: 55vh; }
+  #graph svg { max-width: none; min-width: 48rem; }
+  dialog { padding: 1rem; }
+}

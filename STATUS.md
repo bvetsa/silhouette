@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-10-11
+Last updated: 2026-10-15
 
 ## Current status
 
@@ -11,8 +11,8 @@ on late evidence. Retained active and quiescent traces contribute to topology;
 quiescent history is bounded by count and age, and each trace has a span cap. Operational finalization does not establish trace completeness.
 Each export publishes its complete admitted subset, advances cumulative counters,
 and then emits sorted unique dirty trace IDs under a narrow publication mutex.
-The graph worker reconstructs only those traces from their latest authoritative
-state, atomically replaces their reference-counted topology contributions, and
+The presentation-independent query worker reconstructs only those traces from their latest authoritative
+state, atomically replaces their topology, provenance, and summary contributions, and
 publishes a new topology version only when the deterministic graph or telemetry
 presence changes. Equivalent updates retain all evidence and contribution
 counts without rendering an already successful version again; if the current
@@ -26,40 +26,46 @@ existing deterministic trace, service graph, DOT, and SVG outputs.
 
 ## Current task
 
-V2.4 bounded recent trace retention is implemented and committed on
-`v2-bounded-retention` at implementation commit `8269c9a`, based on merged V2.3
-`main` at `66fbbb4`.
-The branch includes admission limits, presence-aware lookup, atomic graph
-reconciliation, automatic age/count eviction, exact OTLP capacity rejection,
-and an application shutdown guard. Production defaults remain 30-second
-quiescence with 1,000 quiescent traces, ten-minute accepted-evidence age, and
-10,000 spans per logical trace. Active traces are protected.
+V2.5 topology-first request drilldown is implemented on
+`v2-request-drilldown`, based on the merged V2.4 `main` commit `ee00365d`.
+The manager now exposes incarnation-safe metadata snapshots and publication
+revisions. A renderer-free query service owns reconciliation, exact provenance,
+live support paging, and observation versions; HTTP and the browser consume it.
+The viewer provides interactive SVG, live lazy trace details, exact highlighting,
+and browser-owned frozen snapshots after eviction.
 
-A fresh Debug configure/build in `build-v2-retention` succeeds, reusing installed
-pinned dependencies and the pinned cached protocol source while rebuilding the
-application and regenerating bindings. The focused manager, incremental-graph,
-and live-map cases pass, and the fresh full 129-case CTest suite passes locally,
-including loopback integrations and Graphviz. New real OTLP/HTTP/Graphviz cases verify exact mixed and
-capacity-only rejection, zero-rejection responses, cumulative admissions after
-eviction, response preparation failure before publication, safe partial-startup
-unwinding, idle real-time age expiry without new exports, disappearance and fresh
-reappearance, and final artifacts derived only from retained evidence.
-
-The fresh full suite passes. Eleven concurrency-sensitive cases pass 100
-repetitions each (1,100 runs). Three new receiver/failure/partial-startup cases pass twenty repetitions each
-(60 runs). SVG XML inspection confirms fresh retained support with expired support
-absent. Final review and whitespace checks pass. The feature branch is pushed.
-No pull request or GitHub Actions result has been verified yet. Native Windows
-execution remains untested on this macOS host. TSan CI is an optional follow-up
-and no CD work is included.
+A fresh Debug configuration/build in `build-v25` uses the unchanged pinned
+vcpkg baseline with the private nlohmann-json presentation dependency. All 144
+CTest cases passed locally, including new query, lifecycle notification, identity,
+failure recovery, HTTP/SSE, HTTP restart, and complete 10,000-span response cases.
+The query-only test target links only the core library. Eight concurrency and
+recovery regressions passed 100 repetitions each. All 14 real-browser acceptance
+stages passed against the synthetic OTLP fixture, covering exact topology clicks,
+live details, paging, 10,000-span lazy trees, retained incarnations, eviction
+snapshots, keyboard focus/expansion preservation, clipboard feedback, response
+races, and inert SVG. Desktop/mobile viewport captures were inspected. The finish
+reviewer scored the mobile readability and tree-batch focus fixes resolved with
+a Ship verdict at that scope; the documentation comparison confirmed the
+existing visual identity and engine/frontend boundary. These are local checks;
+GitHub Actions must pass on the feature PR before integration. Native Windows
+execution remains untested on this macOS host.
 
 ## Next concrete step
 
-Open the V2.4 pull request, verify GitHub Actions CI, review the final PR diff,
-and merge only after CI passes. After merge, verify `main` CI. Keep future
-playback, inference, and aggregate active-state resource budgets separate.
+Deliver V2.5 through the feature-branch PR, review the final diff, and require
+passing GitHub Actions before integration into `main`.
 
 ## Accepted decisions
+
+- V2.5 boundary: the query service owns topology/provenance/read semantics; HTTP/JSON and browser selection/highlighting/stale display state remain presentation-only.
+- Retained identity: process-local incarnation per successful record creation, stable until eviction; query-owned observation instance scopes identities across engine restarts.
+- Publication recency: one sequence per successful non-empty admitted subset, shared by all admitted traces; empty/rejected/failed publications consume none.
+- Recovery: metadata-aware owned `SnapshotRecords()` rebuilds graph, provenance, and summaries atomically; ages use only the manager's injected clock.
+- Observation versions: advance for changed queryable state, including lifecycle and accepted duplicates; no-op notices, identical resync, and passive age growth do not advance them.
+- Lifecycle notifications: newly quiescent survivors and evicted IDs are disjoint post-unlock invalidations. Lifecycle-only changes do not reconstruct evidence or render.
+- Support queries: exact service/edge/gap facts, all retained lifecycle states, newest publication first, 50-record live keyset pages without pinned snapshots.
+- Trace display: complete exact-incarnation detail, lazy 100-item browser lists, live updates, exact highlighting, and browser-only frozen snapshots discarded on close.
+- Query transport: focused unstable HTTP endpoints and observation invalidations over the existing SSE connection; private JSON dependency, safe inline SVG, exact large integer strings.
 
 - Project name: **Silhouette**.
 - Core thesis: reconstruct observed architecture and request flow, while exposing gaps in the observation itself.
@@ -307,5 +313,5 @@ new telemetry to retry; there is no timer or automatic retry loop.
 
 Global resource/backpressure budgets, persistence,
 request playback, incremental Graphviz layout, configurable networking, and a
-larger browser interface remain deferred beyond V2.4. Candidate later
+standalone frontend packaging remain deferred beyond V2.5. Candidate later
 directions remain listed in `ROADMAP.md`.

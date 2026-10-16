@@ -1,4 +1,5 @@
 #include "silhouette/rendering/service_graph_dot.h"
+#include "silhouette/rendering/topology_fact_key.h"
 #include "silhouette/rendering/service_graph_renderer.h"
 #include "rendering/service_graph_artifacts.h"
 #include "rendering/windows_process_arguments.h"
@@ -13,6 +14,8 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <regex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,7 +26,14 @@ namespace {
 
 using silhouette::ServiceGraph;
 using silhouette::ServiceGraphGapKind;
-using silhouette::rendering::FormatServiceGraphDot;
+// Keep the legacy shape/escaping assertions independent of interaction IDs;
+// the identity regression below checks those IDs directly.
+std::string FormatServiceGraphDot(const ServiceGraph& graph)
+{
+    auto dot = silhouette::rendering::FormatServiceGraphDot(graph);
+    dot = std::regex_replace(dot, std::regex{R"( \[id="fact_[a-f0-9]+"(?:, tooltip="(?:\\.|[^"\\])*")?\])"}, "");
+    return std::regex_replace(dot, std::regex{R"(id="fact_[a-f0-9]+(?:_source|_destination)?", )"}, "");
+}
 using silhouette::rendering::GraphvizServiceGraphRenderer;
 using silhouette::rendering::WriteServiceGraphArtifacts;
 
@@ -74,6 +84,38 @@ std::string TopologyOnly(const std::string& dot)
     const auto legend = dot.find("\n  subgraph cluster_legend");
     Require(legend != std::string::npos, "embedded legend was missing");
     return dot.substr(0, legend);
+}
+
+void StableInteractionKeysRoundTrip()
+{
+    using silhouette::rendering::EncodeTopologyFact;
+    using silhouette::rendering::DecodeTopologyFact;
+    const std::vector<silhouette::TopologyFact> facts{
+        std::string{"A\0B", 3}, silhouette::ServiceEdge{"a:b", "c"},
+        silhouette::ServiceEdge{"a", "b:c"},
+        silhouette::ServiceGraphGap{ServiceGraphGapKind::missing_service, std::nullopt, ""},
+        silhouette::ServiceGraphGap{ServiceGraphGapKind::missing_service, "", std::nullopt}};
+    std::set<std::string> keys;
+    for (const auto& fact : facts) {
+        const auto key = EncodeTopologyFact(fact);
+        Require(keys.insert(key).second && DecodeTopologyFact(key) == fact,
+                "fact identity collided or failed round-trip");
+    }
+    Require(!DecodeTopologyFact("fact_0g") && !DecodeTopologyFact("fact_0000000001")
+        && !DecodeTopologyFact(EncodeTopologyFact(facts[0]) + "00"), "malformed fact identity accepted");
+    const ServiceGraph graph{{"B", "C"}, {{"B", "C"}},
+        {{ServiceGraphGapKind::missing_parent, std::nullopt, "C"}}};
+    const auto first = silhouette::rendering::FormatServiceGraphDot(graph);
+    auto shifted = graph; shifted.services.insert(shifted.services.begin(), "A");
+    const auto second = silhouette::rendering::FormatServiceGraphDot(shifted);
+    for (const silhouette::TopologyFact& fact : std::vector<silhouette::TopologyFact>{
+        std::string{"B"}, graph.edges[0], graph.gaps[0]}) {
+        const auto identity = "id=\"" + EncodeTopologyFact(fact) + "\"";
+        Require(first.find(identity) != std::string::npos && second.find(identity) != std::string::npos,
+                "unrelated service changed interaction identity");
+    }
+    Require(first.find(EncodeTopologyFact(graph.gaps[0]) + "_destination") != std::string::npos,
+            "gap connector lacks separate identity");
 }
 
 void EmptyGraphHasExactLegend()
@@ -304,7 +346,7 @@ void RealGraphvizProducesSvg()
     const auto result = WriteServiceGraphArtifacts(graph);
     Require(result.svg_rendered, result.render_error);
     Require(result.render_error.empty(), "successful render returned an error");
-    Require(ReadFile("silhouette.dot") == FormatServiceGraphDot(graph),
+    Require(ReadFile("silhouette.dot") == silhouette::rendering::FormatServiceGraphDot(graph),
             "written DOT differed from the pure formatter");
     const auto svg = ReadFile("silhouette.svg");
     Require(svg.find("<svg") != std::string::npos
@@ -505,6 +547,7 @@ struct TestCase final {
 };
 
 constexpr std::array kTestCases{
+    TestCase{"stable_interaction_keys_round_trip", StableInteractionKeysRoundTrip},
     TestCase{"windows_process_arguments_preserve_paths",
              WindowsProcessArgumentsPreservePaths},
     TestCase{"empty_graph_has_exact_legend", EmptyGraphHasExactLegend},

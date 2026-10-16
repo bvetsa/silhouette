@@ -351,3 +351,101 @@ V2.4 bounds quiescent count/age and per-trace span count, not aggregate active
 state, arbitrary span bytes, temporary processing, or externally owned snapshots.
 Global backpressure/resource budgets, persistence, history/playback, inference,
 span segmentation, configuration frameworks, and sanitizer CI remain separate.
+
+
+## V2.5 contract — topology-first request drilldown
+
+The engine owns retained record identity, reconstruction, topology, provenance,
+and typed queries. `ObservabilityQueryService` owns the reconciliation worker
+previously in `LiveServiceMap`; the latter owns only presentation/rendering work.
+Core/query targets have no HTTP, JSON, Graphviz, DOM, selection, or browser-session
+dependency. The embedded viewer is a replaceable external presentation client.
+
+A retained record has `TraceRecordKey {TraceId, TraceIncarnationId}`. Incarnations
+are process-local, assigned transactionally on creation, stable through reopening,
+and never reused during the manager lifetime. Eviction forgets all evidence;
+reappearance starts a new incarnation. `ObservationInstanceId` belongs to the
+query service and changes when that service is recreated, not when HTTP restarts.
+It scopes transport identities and cursors across process/service restarts.
+
+Each successful non-empty admitted subset in `AppendBatch()` receives one new
+publication sequence shared by every admitted trace. Accepted duplicates refresh
+it; empty, fully rejected, and failed publications do not advance it. Ordering is
+publication sequence descending, then record key ascending. Counter exhaustion
+fails before publication instead of wrapping identities or versions.
+
+`SnapshotRecords()` is the full authoritative recovery path: it captures record
+keys, lifecycle, revisions, observation metadata, and owned evidence together.
+Targeted metadata-aware lookups can omit unchanged evidence, explicitly represent
+absence, or request metadata without evidence. The manager samples its injected
+clock once per lookup/snapshot and computes relative evidence ages. Query code
+never mixes a real clock with manager fake time. Reconstruction runs after the
+manager lock is released, and querying does not refresh retention.
+
+A separate reverse provenance index maps exact topology facts to retained record
+keys. Service support means any span naming that exact service, including
+disconnected evidence. Edge support means the exact resolved cross-service
+parent/child relation. Gap support means exact `ServiceGraphGap` equality,
+including unknown endpoints. Provenance is not stored in canonical `ServiceGraph`.
+Normal invalidations update affected records only. Graph, provenance, summary,
+and version preparation precedes one observable publication under the query-model
+mutex. Failure exposes no partial reconciliation. Recovery rebuilds all three
+from `SnapshotRecords()`; failed full recovery waits for a new invalidation.
+
+Lifecycle sweeps notify newly quiescent survivors after manager unlock. Records
+also evicted in that sweep appear only in the eviction notification, so these ID
+sets are disjoint. All notices invalidate latest state rather than replaying old
+transitions. Lifecycle-only updates skip evidence reconstruction and graph replacement.
+
+`observation_version` advances only when published queryable state changes:
+retained membership, admitted evidence/revision, lifecycle, or supporting facts.
+Duplicate invalidations and identical full resynchronizations do not advance it.
+Passive age growth does not create events. `topology_version` keeps its V2.2
+meaning; lifecycle-only changes neither render nor retry failed rendering.
+Observation versions are invalidation watermarks, not globally atomic query
+snapshot tokens; asynchronous reconciliation may coalesce intermediate states.
+Support queries validate candidates against current manager identity/revision,
+excluding stale memberships until the next successful reconciliation.
+
+Support lists include active and quiescent records, newest first, in pages of
+50. Cursors are stateless keyset continuations scoped to the observation instance.
+Pages use current retained state and may shift during ingestion or eviction;
+no historical snapshot is pinned. Live invalidation refreshes the first page.
+Details query the exact retained incarnation and return all spans, preserving
+reconstruction diagnostics and duplicate IDs. Flat span/relationship indices
+avoid deeply nested transport serialization. IDs, versions, publication sequences,
+and nanosecond timestamps use exact decimal/hex strings where appropriate.
+
+The internal, unstable HTTP API adds read-only `POST /query/support` and
+`GET /query/trace/<trace-id>/<incarnation>?instance=<observation-instance>`.
+Support takes an opaque fact key plus optional cursor. Malformed input returns
+400, an unavailable exact identity returns 404, serialization/query failures
+return 500, and an obsolete topology fact has an empty support list. JSON and
+nlohmann-json stay private to presentation. Query responses use owned known-length
+providers to avoid the HTTP dependency's slow automatic Brotli pass over large
+live details. HTTP does not mutate or pin engine state.
+
+The existing SSE connection carries `graph-updated` and `observations-updated`
+invalidation events, never full trees. Observation events do not wait for Graphviz.
+Reconnect sends current versions and query instance identity; there is no replay
+history or browser polling. SVG responses identify their actual rendered version.
+Graphviz `id` attributes carry reversible, unambiguous presentation fact keys;
+legend elements are not interactive and diagnostic connectors have unique IDs.
+
+The viewer sanitizes inline SVG to inert allowed elements/attributes, renders
+telemetry labels as text, and supports keyboard activation. Selection opens a
+lazy reconstructed tree, highlights its exact visible facts, and de-emphasizes
+unrelated topology. Root/child lists reveal batches of 100 without discarding
+backend evidence. An open exact incarnation updates live even if it stops
+supporting the original clicked fact. On eviction, the last successful browser
+snapshot freezes as “No longer retained”; a new incarnation cannot replace it.
+Closing/leaving discards that browser-only copy. Query-instance change freezes
+old selections and resets list/cursor/version state. Network and server failures
+remain errors rather than being presented as eviction. Request generations,
+cancellation, and coalesced refetches prevent stale response replacement.
+
+Shutdown order is receiver, manager lifecycle, query reconciliation, rendering,
+then HTTP/SSE. The guard is armed before startup, all referenced sinks survive
+through their worker joins, and pre-start/repeated cleanup is harmless.
+V2.5 adds no history, tombstones, pinning, waterfall, retention-policy changes,
+architectural inference, global memory budget, TSan configuration, or CD work.

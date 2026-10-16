@@ -14,7 +14,9 @@ Silhouette currently:
   from quiescent traces after 30 seconds without accepted evidence;
 - reopens quiescent traces when late evidence arrives;
 - updates the observed service topology incrementally when accepted telemetry changes;
-- exposes an event-driven live SVG map at `http://127.0.0.1:8008`;
+- exposes an event-driven interactive SVG map at `http://127.0.0.1:8008`;
+- lists retained traces supporting an exact service, dependency, or gap;
+- opens live reconstructed request details and highlights their observed path;
 - produces readable trace diagnostics, deterministic DOT output, and a static service map at shutdown;
 - preserves useful partial topology while marking missing parents, orphan spans, disconnected fragments, incomplete traces, and missing service identity.
 
@@ -76,6 +78,22 @@ trace active. Evidence arriving after eviction starts fresh; forgotten parents
 remain visible as gaps. These limits bound recent history, not total process
 memory under an unlimited active workload.
 
+Click a service, confirmed dependency, or gap marker (or focus it and press
+Enter/Space) to browse its supporting retained traces, newest accepted evidence
+first. Lists show 50 records at a time; “Load more” uses live cursors and updates
+return the list to its first page. Select a trace to inspect a collapsed request
+tree, expand its relationships and diagnostics, or copy IDs. Large lists of
+roots/children reveal 100 entries at a time while the backend returns complete
+retained evidence. Live refreshes preserve expanded branches and keyboard focus.
+On narrow screens, scroll the map at its readable scale to reach other services.
+
+The selected retained incarnation updates live and highlights its exact services,
+edges, and gaps. If evicted, its last browser snapshot stays open as “No longer
+retained.” Reappearance under the same TraceId does not replace it; closing or
+leaving discards the frozen copy. A query-service/process restart also freezes old
+selections; restarting HTTP alone preserves engine identity. Network/server
+errors are distinct from evidence eviction.
+
 The incremental work is trace reconstruction and topology maintenance, not
 Graphviz layout. Whenever rendering runs, Graphviz lays out the whole current
 graph; only obsolete pending render requests are coalesced.
@@ -84,7 +102,7 @@ graph; only obsolete pending render requests are coalesced.
 
 Silhouette requires a C++20 compiler, CMake 3.24 or newer, and
 [vcpkg](https://github.com/microsoft/vcpkg). The manifest's pinned vcpkg baseline
-selects the versions of `grpc`, `protobuf`, and `cpp-httplib` (`grpc` includes
+selects the versions of `grpc`, `protobuf`, `cpp-httplib`, and `nlohmann-json` (`grpc` includes
 its `codegen` feature). CMake downloads the pinned OpenTelemetry protocol
 definitions and generates their C++ bindings under `build/`.
 
@@ -116,9 +134,12 @@ allocation failure is diagnosed and closes only that connection, without
 stopping the listener or ingestion.
 SSE streams leave one worker available for page and SVG requests; excess event
 streams receive HTTP 503 until a slot becomes available.
-The local page is plain embedded HTML/CSS/JavaScript. It receives rendered-version events
-over server-sent events and fetches completed in-memory SVG; there is no
-frontend build or browser polling loop. Stop Silhouette with Ctrl-C; it waits
+The local page is plain HTML/CSS/JavaScript kept in separate presentation assets
+and embedded at build time. One SSE connection invalidates rendered topology and
+trace observations; focused HTTP requests fetch SVG, support pages, or full trace
+details. There is no frontend build or browser polling loop. The query service
+owns provenance and observation identity independently of the HTTP server, and
+JSON remains outside the core. Stop Silhouette with Ctrl-C; it waits
 for in-flight requests, stops the trace lifecycle worker without forcing active
 traces to become quiescent, drains topology and rendering work, and then
 prints the accepted export-request and span totals followed by deterministic

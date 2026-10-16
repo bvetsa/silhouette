@@ -49,6 +49,26 @@ therefore require local socket access.
 - Inspect generated artifacts and integration results when automated assertions do not fully establish correctness.
 - Report exactly what was verified. Local tests, synthetic tests, and external integration tests are distinct forms of evidence.
 
+### Optional drilldown browser acceptance
+
+The `drilldown_browser_fixture` target starts the real OTLP receiver, query
+service, Graphviz renderer, and loopback HTTP adapter with synthetic spans and
+an explicitly advanced test clock. It adds no application control endpoints.
+With Python 3, Playwright CLI (`@playwright/cli`), and its Chromium browser
+installed, run:
+
+```bash
+python3 tests/run_drilldown_browser_check.py build/tests/drilldown_browser_fixture \
+  --cli /path/to/playwright-cli --output build/browser
+```
+
+The optional runner checks topology activation, live updates, retained-record
+identity, eviction snapshots, paging, large lazy trees, keyboard focus,
+clipboard feedback, stale responses, and inert inline SVG. It writes its report,
+logs, and desktop/mobile viewport captures under the selected build directory
+and closes its own browser session and fixture. This is separate from CTest and
+does not establish integration with an external instrumented application.
+
 ## Major and breaking changes
 
 - Explain the problem, affected contracts, compatibility impact, and considered alternatives.

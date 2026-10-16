@@ -45,16 +45,18 @@ int main()
     try {
         silhouette::ActiveTraceManager active_traces{kTraceQuietInterval};
         silhouette::rendering::GraphvizServiceGraphRenderer live_renderer;
+        silhouette::ObservabilityQueryService queries{active_traces, std::cerr};
         silhouette::LiveServiceMap live_map{
-            active_traces, live_renderer, std::cerr};
+            queries, live_renderer, std::cerr};
         silhouette::LocalMapServer map_server{
-            kMapListenAddress, kMapPort, live_map};
+            kMapListenAddress, kMapPort, live_map, queries};
         silhouette::ingestion::OtlpGrpcReceiver receiver{
-            kListenAddress, active_traces, &live_map};
+            kListenAddress, active_traces, &queries};
         silhouette::ApplicationShutdownGuard shutdown{
-            receiver, active_traces, live_map, map_server};
+            receiver, active_traces, queries, live_map, map_server};
 
-        active_traces.StartLifecycle(&live_map);
+        queries.Start();
+        active_traces.StartLifecycle(&queries, &queries);
         live_map.Start();
         bool map_server_started = false;
         try {

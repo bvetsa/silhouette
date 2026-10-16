@@ -18,7 +18,8 @@ public:
     LocalMapServer(
         std::string listen_address,
         int port,
-        const LiveServiceMap& live_map);
+        const LiveServiceMap& live_map,
+        const ObservabilityQueryService& queries);
     ~LocalMapServer();
 
     LocalMapServer(const LocalMapServer&) = delete;
